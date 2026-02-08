@@ -184,14 +184,37 @@ class ComicVineProxyDB:
                     issue_data = result['data']
                     if VERBOSE:
                         print(f"Database HIT (cv_issue table): issue/{issue_id}", file=sys.stderr)
-                    # Ensure issue_data is a dict (JSONB might be dict already)
+                    # Ensure issue_data is a dict and normalize to ComicVine API format
                     if isinstance(issue_data, dict):
                         issue_data = dict(issue_data)
+                        # Ensure all required fields exist with defaults matching ComicVine API format
+                        if 'issue_number' not in issue_data:
+                            issue_data['issue_number'] = ''
+                        if 'name' not in issue_data:
+                            issue_data['name'] = None
+                        if 'cover_date' not in issue_data:
+                            issue_data['cover_date'] = None
+                        if 'store_date' not in issue_data:
+                            issue_data['store_date'] = None
+                        if 'description' not in issue_data:
+                            issue_data['description'] = None
+                        if 'volume' not in issue_data:
+                            issue_data['volume'] = None
+                        elif isinstance(issue_data.get('volume'), dict):
+                            # Ensure volume has id field
+                            if 'id' not in issue_data['volume']:
+                                issue_data['volume']['id'] = None
+                        elif isinstance(issue_data.get('volume'), (int, str)):
+                            # Convert simple ID to dict format expected by Kapowarr
+                            volume_id = issue_data['volume']
+                            issue_data['volume'] = {'id': int(volume_id) if volume_id else None}
+                        else:
+                            # If volume is not a dict, int, or str, set to None
+                            issue_data['volume'] = None
                     return {
                         'status_code': 1,
                         'error': 'OK',
-                        'results': issue_data,
-                        '_source': 'local_database_table'  # Indicator for testing
+                        'results': issue_data
                     }
             except Exception as e:
                 if VERBOSE:
@@ -206,14 +229,37 @@ class ComicVineProxyDB:
                     issue_data = dict(result)
                     if VERBOSE:
                         print(f"Database HIT (cv_issue table, direct columns): issue/{issue_id}", file=sys.stderr)
-                    # Ensure results is a dict
+                    # Ensure results is a dict and normalize to ComicVine API format
                     if isinstance(issue_data, dict):
                         issue_data = dict(issue_data)
+                        # Ensure all required fields exist with defaults matching ComicVine API format
+                        if 'issue_number' not in issue_data:
+                            issue_data['issue_number'] = ''
+                        if 'name' not in issue_data:
+                            issue_data['name'] = None
+                        if 'cover_date' not in issue_data:
+                            issue_data['cover_date'] = None
+                        if 'store_date' not in issue_data:
+                            issue_data['store_date'] = None
+                        if 'description' not in issue_data:
+                            issue_data['description'] = None
+                        if 'volume' not in issue_data:
+                            issue_data['volume'] = None
+                        elif isinstance(issue_data.get('volume'), dict):
+                            # Ensure volume has id field
+                            if 'id' not in issue_data['volume']:
+                                issue_data['volume']['id'] = None
+                        elif isinstance(issue_data.get('volume'), (int, str)):
+                            # Convert simple ID to dict format expected by Kapowarr
+                            volume_id = issue_data['volume']
+                            issue_data['volume'] = {'id': int(volume_id) if volume_id else None}
+                        else:
+                            # If volume is not a dict, int, or str, set to None
+                            issue_data['volume'] = None
                     return {
                         'status_code': 1,
                         'error': 'OK',
-                        'results': issue_data,
-                        '_source': 'local_database_table'  # Indicator for testing
+                        'results': issue_data
                     }
             except Exception as e:
                 if VERBOSE:
@@ -229,11 +275,37 @@ class ComicVineProxyDB:
                     issue_data = result['data']
                     if VERBOSE:
                         print(f"Database HIT (cv_issue table, integer ID): issue/{issue_id_int}", file=sys.stderr)
+                    # Ensure issue_data is a dict and normalize to ComicVine API format
+                    if isinstance(issue_data, dict):
+                        issue_data = dict(issue_data)
+                        # Ensure all required fields exist with defaults matching ComicVine API format
+                        if 'issue_number' not in issue_data:
+                            issue_data['issue_number'] = ''
+                        if 'name' not in issue_data:
+                            issue_data['name'] = None
+                        if 'cover_date' not in issue_data:
+                            issue_data['cover_date'] = None
+                        if 'store_date' not in issue_data:
+                            issue_data['store_date'] = None
+                        if 'description' not in issue_data:
+                            issue_data['description'] = None
+                        if 'volume' not in issue_data:
+                            issue_data['volume'] = None
+                        elif isinstance(issue_data.get('volume'), dict):
+                            # Ensure volume has id field
+                            if 'id' not in issue_data['volume']:
+                                issue_data['volume']['id'] = None
+                        elif isinstance(issue_data.get('volume'), (int, str)):
+                            # Convert simple ID to dict format expected by Kapowarr
+                            volume_id = issue_data['volume']
+                            issue_data['volume'] = {'id': int(volume_id) if volume_id else None}
+                        else:
+                            # If volume is not a dict, int, or str, set to None
+                            issue_data['volume'] = None
                     return {
                         'status_code': 1,
                         'error': 'OK',
-                        'results': issue_data,
-                        '_source': 'local_database_table'  # Indicator for testing
+                        'results': issue_data
                     }
             except Exception as e:
                 if VERBOSE:
@@ -275,13 +347,82 @@ class ComicVineProxyDB:
                 result = cursor.fetchone()
                 if result:
                     volume_data = result['data']
+                    # Ensure volume_data is a dict and normalize to ComicVine format
+                    if isinstance(volume_data, dict):
+                        # Ensure all required fields exist with defaults matching ComicVine API format
+                        # Based on actual ComicVine API response structure
+                        if 'deck' not in volume_data:
+                            volume_data['deck'] = None
+                        if 'description' not in volume_data:
+                            volume_data['description'] = None
+                        if 'image' not in volume_data:
+                            volume_data['image'] = {
+                                'icon_url': '',
+                                'medium_url': '',
+                                'screen_url': '',
+                                'screen_large_url': '',
+                                'small_url': '',
+                                'super_url': '',
+                                'thumb_url': '',
+                                'tiny_url': '',
+                                'original_url': '',
+                                'image_tags': ''
+                            }
+                        elif isinstance(volume_data.get('image'), dict):
+                            # Ensure all image sub-fields exist
+                            image_defaults = {
+                                'icon_url': '',
+                                'medium_url': '',
+                                'screen_url': '',
+                                'screen_large_url': '',
+                                'small_url': '',
+                                'super_url': '',
+                                'thumb_url': '',
+                                'tiny_url': '',
+                                'original_url': '',
+                                'image_tags': ''
+                            }
+                            # Log original image data for debugging
+                            if VERBOSE:
+                                print(f"[SOURCE] Original image data for volume {volume_id}: {volume_data.get('image')}", file=sys.stderr, flush=True)
+                            for key, default in image_defaults.items():
+                                # Only set default if key is missing or value is None
+                                # Don't overwrite empty strings - they might be valid (though unlikely)
+                                # But if the value is None or missing, set the default
+                                if key not in volume_data['image']:
+                                    volume_data['image'][key] = default
+                                elif volume_data['image'][key] is None:
+                                    volume_data['image'][key] = default
+                                # If it's an empty string, leave it as is (might be valid or might need to be fetched from API)
+                            # Log final image data for debugging
+                            if VERBOSE:
+                                print(f"[SOURCE] Final image data for volume {volume_id}: {volume_data.get('image')}", file=sys.stderr, flush=True)
+                                print(f"[SOURCE] small_url value: '{volume_data['image'].get('small_url')}'", file=sys.stderr, flush=True)
+                        if 'count_of_issues' not in volume_data:
+                            volume_data['count_of_issues'] = 0
+                        if 'site_detail_url' not in volume_data:
+                            volume_data['site_detail_url'] = ''
+                        if 'aliases' not in volume_data:
+                            volume_data['aliases'] = None
+                        if 'start_year' not in volume_data:
+                            volume_data['start_year'] = None
+                        if 'issues' not in volume_data:
+                            volume_data['issues'] = []
+                        if 'publisher' not in volume_data:
+                            volume_data['publisher'] = None
+                        elif isinstance(volume_data.get('publisher'), dict):
+                            # Ensure publisher has name field
+                            if 'name' not in volume_data['publisher']:
+                                volume_data['publisher']['name'] = ''
+                            elif volume_data['publisher']['name'] is None:
+                                volume_data['publisher']['name'] = ''
                     if VERBOSE:
                         print(f"Database HIT (cv_volume table): volume/{volume_id}", file=sys.stderr)
+                        print(f"Volume data keys: {list(volume_data.keys()) if isinstance(volume_data, dict) else 'not a dict'}", file=sys.stderr)
                     return {
                         'status_code': 1,
                         'error': 'OK',
-                        'results': volume_data,
-                        '_source': 'local_database_table'  # Indicator for testing
+                        'results': volume_data
                     }
             except Exception as e:
                 if VERBOSE:
@@ -294,13 +435,39 @@ class ComicVineProxyDB:
                 result = cursor.fetchone()
                 if result:
                     volume_data = dict(result)
+                    # Ensure all required fields exist with defaults
+                    if 'deck' not in volume_data:
+                        volume_data['deck'] = None
+                    if 'description' not in volume_data:
+                        volume_data['description'] = None
+                    if 'image' not in volume_data:
+                        volume_data['image'] = {'small_url': '', 'medium_url': '', 'super_url': ''}
+                    elif isinstance(volume_data.get('image'), dict):
+                        if 'small_url' not in volume_data['image']:
+                            volume_data['image']['small_url'] = ''
+                    if 'count_of_issues' not in volume_data:
+                        volume_data['count_of_issues'] = 0
+                    if 'site_detail_url' not in volume_data:
+                        volume_data['site_detail_url'] = ''
+                    if 'aliases' not in volume_data:
+                        volume_data['aliases'] = None
+                    if 'start_year' not in volume_data:
+                        volume_data['start_year'] = None
+                    if 'publisher' not in volume_data:
+                        volume_data['publisher'] = None
+                    elif isinstance(volume_data.get('publisher'), dict):
+                        # Ensure publisher has name field
+                        if 'name' not in volume_data['publisher']:
+                            volume_data['publisher']['name'] = ''
+                        elif volume_data['publisher']['name'] is None:
+                            volume_data['publisher']['name'] = ''
                     if VERBOSE:
                         print(f"Database HIT (cv_volume table, direct columns): volume/{volume_id}", file=sys.stderr)
+                        print(f"Volume data keys: {list(volume_data.keys()) if isinstance(volume_data, dict) else 'not a dict'}", file=sys.stderr)
                     return {
                         'status_code': 1,
                         'error': 'OK',
-                        'results': volume_data,
-                        '_source': 'local_database_table'  # Indicator for testing
+                        'results': volume_data
                     }
             except Exception as e:
                 if VERBOSE:
@@ -314,13 +481,40 @@ class ComicVineProxyDB:
                 result = cursor.fetchone()
                 if result:
                     volume_data = result['data']
+                    # Ensure volume_data is a dict and has all required fields
+                    if isinstance(volume_data, dict):
+                        if 'deck' not in volume_data:
+                            volume_data['deck'] = None
+                        if 'description' not in volume_data:
+                            volume_data['description'] = None
+                        if 'image' not in volume_data:
+                            volume_data['image'] = {'small_url': '', 'medium_url': '', 'super_url': ''}
+                        elif isinstance(volume_data.get('image'), dict):
+                            if 'small_url' not in volume_data['image']:
+                                volume_data['image']['small_url'] = ''
+                        if 'count_of_issues' not in volume_data:
+                            volume_data['count_of_issues'] = 0
+                        if 'site_detail_url' not in volume_data:
+                            volume_data['site_detail_url'] = ''
+                        if 'aliases' not in volume_data:
+                            volume_data['aliases'] = None
+                        if 'start_year' not in volume_data:
+                            volume_data['start_year'] = None
+                        if 'publisher' not in volume_data:
+                            volume_data['publisher'] = None
+                        elif isinstance(volume_data.get('publisher'), dict):
+                            # Ensure publisher has name field
+                            if 'name' not in volume_data['publisher']:
+                                volume_data['publisher']['name'] = ''
+                            elif volume_data['publisher']['name'] is None:
+                                volume_data['publisher']['name'] = ''
                     if VERBOSE:
                         print(f"Database HIT (cv_volume table, integer ID): volume/{volume_id_int}", file=sys.stderr)
+                        print(f"Volume data keys: {list(volume_data.keys()) if isinstance(volume_data, dict) else 'not a dict'}", file=sys.stderr)
                     return {
                         'status_code': 1,
                         'error': 'OK',
-                        'results': volume_data,
-                        '_source': 'local_database_table'  # Indicator for testing
+                        'results': volume_data
                     }
             except Exception as e:
                 if VERBOSE:
@@ -389,8 +583,7 @@ class ComicVineProxyDB:
                     return {
                         'status_code': 1,
                         'error': 'OK',
-                        'results': data,
-                        '_source': 'local_database_table'
+                        'results': data
                     }
             except:
                 pass
@@ -407,8 +600,7 @@ class ComicVineProxyDB:
                     return {
                         'status_code': 1,
                         'error': 'OK',
-                        'results': data,
-                        '_source': 'local_database_table'
+                        'results': data
                     }
             except:
                 pass
@@ -475,9 +667,19 @@ class ComicVineProxyDB:
 
                         # Build JSONB query for the field
                         # For JSONB, we use: data->>'field' = 'value'
-                        # Handle common fields: name, start_year, publisher, etc.
-                        where_clauses.append(f"data->>%s = %s")
-                        filter_params.extend([field, value])
+                        # Special handling for nested objects like volume:796
+                        # Volume can be stored as {"id": 796} (object) or 796 (number/string)
+                        if field == 'volume':
+                            # Handle both cases: volume as object with id, or direct ID
+                            # Check: data->>'volume' = '796' (if stored as string/number)
+                            # OR data->'volume'->>'id' = '796' (if stored as object)
+                            # Note: field name must be in the query string, not parameterized
+                            where_clauses.append(f"(data->>'{field}' = %s OR (data->'{field}'->>'id')::text = %s)")
+                            filter_params.extend([value, value])
+                        else:
+                            # Field name must be in query string for JSONB operators
+                            where_clauses.append(f"data->>'{field}' = %s")
+                            filter_params.append(value)
 
             # Build ORDER BY clause from sort
             order_by = "id"
@@ -516,12 +718,26 @@ class ComicVineProxyDB:
             if VERBOSE:
                 print(f"Executing query: {query}", file=sys.stderr)
                 print(f"  Params: {query_params_list}", file=sys.stderr)
+            else:
+                # Always log query for list endpoints to debug
+                print(f"[SOURCE] Executing list query for {resource_type}: {query}", file=sys.stderr, flush=True)
+                print(f"[SOURCE] Query params: {query_params_list}", file=sys.stderr, flush=True)
 
-            cursor.execute(query, query_params_list)
-            results = cursor.fetchall()
+            try:
+                cursor.execute(query, query_params_list)
+                results = cursor.fetchall()
+            except Exception as query_error:
+                print(f"[SOURCE] SQL query error: {query_error}", file=sys.stderr, flush=True)
+                if VERBOSE:
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
+                return None
 
             if not results:
+                print(f"[SOURCE] No results found for {resource_type} with filters: {query_params}", file=sys.stderr, flush=True)
                 return None
+
+            print(f"[SOURCE] Found {len(results)} results for {resource_type}", file=sys.stderr, flush=True)
 
             # Convert to list of dicts
             items = []
@@ -549,8 +765,7 @@ class ComicVineProxyDB:
                 'offset': offset,
                 'number_of_page_results': len(items),
                 'number_of_total_results': total_count,
-                'results': items,
-                '_source': 'local_database_table'
+                'results': items
             }
 
         except Exception as e:
@@ -582,7 +797,8 @@ class ComicVineProxyDB:
                 # Make a copy to avoid modifying the original (JSONB might be immutable)
                 if isinstance(cached_data, dict):
                     cached_data = dict(cached_data)
-                    cached_data['_source'] = 'api_cache'
+                    # Remove _source if it exists (from old cached data)
+                    cached_data.pop('_source', None)
                 if VERBOSE:
                     print(f"Cache HIT (api_cache table): {resource_type}/{resource_id}", file=sys.stderr)
                 return cached_data
@@ -842,7 +1058,8 @@ def fetch_from_comicvine(resource_type: str, resource_id: Optional[str] = None, 
 def proxy_api(api_path: str):
     """Proxy ComicVine API requests"""
     full_path = f"/api/{api_path}"
-    print(f"[SOURCE] Request received: {full_path}", file=sys.stderr, flush=True)
+    print(f"[SOURCE] ===== REQUEST RECEIVED: {full_path} =====", file=sys.stderr, flush=True)
+    print(f"[SOURCE] Request args: {dict(request.args)}", file=sys.stderr, flush=True)
 
     # Parse the URL to extract resource type, ID, and whether it's a list
     parsed = parse_comicvine_url(full_path)
@@ -878,8 +1095,85 @@ def proxy_api(api_path: str):
         db_result = proxy_db.get_resource_from_db(resource_type, resource_id)
         if db_result:
             print(f"[SOURCE] Database HIT (direct table): {resource_type}/{resource_id}", file=sys.stderr, flush=True)
+            # Remove _source from response to match ComicVine format exactly
+            db_result.pop('_source', None)
+
+            # Check if volume has empty image URLs - if so, try to get from ComicVine API
+            print(f"[SOURCE] Checking image fallback for {resource_type}/{resource_id} - has 'results': {'results' in db_result}", file=sys.stderr, flush=True)
+            if resource_type == 'volume' and 'results' in db_result:
+                print(f"[SOURCE] Volume image fallback check STARTED for {resource_id}", file=sys.stderr, flush=True)
+                volume_results = db_result['results']
+                image_data = volume_results.get('image', {})
+                if not isinstance(image_data, dict):
+                    image_data = {}
+                small_url = image_data.get('small_url', '') if image_data else ''
+                print(f"[SOURCE] Volume {resource_id} - Full results keys: {list(volume_results.keys())}", file=sys.stderr, flush=True)
+                print(f"[SOURCE] Volume {resource_id} image data type: {type(image_data)}, value: {image_data}", file=sys.stderr, flush=True)
+                print(f"[SOURCE] Volume {resource_id} image.small_url from DB: '{small_url}' (type: {type(small_url)})", file=sys.stderr, flush=True)
+
+                # If image URLs are empty or missing, try to fetch from ComicVine API to get the URLs
+                # Check if small_url is empty, None, or missing - be very permissive
+                small_url_value = image_data.get('small_url', '') if isinstance(image_data, dict) else ''
+
+                # Explicit check: if small_url is empty string, None, or missing, trigger fallback
+                # Empty string is falsy, so `not small_url_value` will catch it
+                needs_fallback = (
+                    not image_data or
+                    not isinstance(image_data, dict) or
+                    not small_url_value or
+                    (isinstance(small_url_value, str) and len(small_url_value.strip()) == 0)
+                )
+
+                if needs_fallback:
+                    print(f"[SOURCE] Volume {resource_id} - FALLBACK TRIGGERED - image_data: {bool(image_data)}, is_dict: {isinstance(image_data, dict)}, small_url: '{small_url_value}'", file=sys.stderr, flush=True)
+                    print(f"[SOURCE] Volume {resource_id} has empty/missing image URLs, fetching from ComicVine API to get image data", file=sys.stderr, flush=True)
+                    # Ensure we request the image field when fetching from API
+                    fallback_params = dict(query_params) if query_params else {}
+                    # Always include image in field_list for fallback
+                    if 'field_list' in fallback_params:
+                        # Add image to existing field_list if not already present
+                        field_list = fallback_params['field_list'].split(',')
+                        if 'image' not in field_list:
+                            field_list.append('image')
+                        fallback_params['field_list'] = ','.join(field_list)
+                    else:
+                        # Request image field along with other common fields
+                        fallback_params['field_list'] = 'id,name,image,description,deck,start_year,count_of_issues,site_detail_url,aliases,publisher,issues'
+
+                    print(f"[SOURCE] Fetching from ComicVine API with params: {fallback_params}", file=sys.stderr, flush=True)
+                    api_response = fetch_from_comicvine(resource_type, resource_id, fallback_params)
+
+                    if api_response and 'results' in api_response:
+                        api_image = api_response['results'].get('image', {})
+                        print(f"[SOURCE] API response image data: {api_image}", file=sys.stderr, flush=True)
+
+                        if isinstance(api_image, dict) and api_image.get('small_url'):
+                            # Update the database result with image URLs from API
+                            db_result['results']['image'] = api_image
+                            print(f"[SOURCE] Updated volume {resource_id} with image URLs from API: '{api_image.get('small_url')}'", file=sys.stderr, flush=True)
+                            print(f"[SOURCE] Final db_result['results']['image'] after update: {db_result['results'].get('image')}", file=sys.stderr, flush=True)
+
+                            # Update the database cache with the complete data
+                            try:
+                                proxy_db.cache_response(resource_type, resource_id, api_response)
+                                print(f"[SOURCE] Updated database cache for volume {resource_id} with image data", file=sys.stderr, flush=True)
+                            except Exception as cache_error:
+                                print(f"[SOURCE] Warning: Failed to update cache: {cache_error}", file=sys.stderr, flush=True)
+                                import traceback
+                                traceback.print_exc(file=sys.stderr)
+                        else:
+                            print(f"[SOURCE] Warning: API response for volume {resource_id} also has empty image URLs. Image data: {api_image}", file=sys.stderr, flush=True)
+                    else:
+                        print(f"[SOURCE] Warning: Failed to fetch image data from ComicVine API for volume {resource_id}. Response: {api_response}", file=sys.stderr, flush=True)
+
+            # Before returning, verify image data is present (for volumes)
+            if resource_type == 'volume' and 'results' in db_result:
+                final_image = db_result['results'].get('image', {})
+                final_small_url = final_image.get('small_url', '') if isinstance(final_image, dict) else ''
+                print(f"[SOURCE] Final response check - Volume {resource_id} image.small_url: '{final_small_url}'", file=sys.stderr, flush=True)
+
             response = jsonify(db_result)
-            response.headers['X-Data-Source'] = db_result.get('_source', 'local_database_table')
+            response.headers['X-Data-Source'] = 'local_database_table'
             return response
         else:
             print(f"[SOURCE] Database MISS: {resource_type}/{resource_id} not found in database", file=sys.stderr, flush=True)
@@ -916,15 +1210,15 @@ def proxy_api(api_path: str):
     if api_response:
         print(f"[SOURCE] API HIT (ComicVine API): {resource_type}/{cache_resource_id}", file=sys.stderr, flush=True)
 
-        # Add source indicator BEFORE caching (so it's included in cached data too)
-        # Create a new dict to ensure _source is properly included
+        # Make a copy to avoid modifying the original
         if isinstance(api_response, dict):
             # Deep copy to ensure we have a mutable dict
             import copy
             api_response = copy.deepcopy(api_response)
-            api_response['_source'] = 'comicvine_api'
+            # Remove _source if it exists (from old cached data)
+            api_response.pop('_source', None)
 
-        # Cache the response if we have a database connection (with _source included)
+        # Cache the response if we have a database connection
         if proxy_db and proxy_db.conn and should_cache:
             try:
                 proxy_db.cache_response(resource_type, cache_resource_id, api_response)

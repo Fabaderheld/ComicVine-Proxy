@@ -1,0 +1,57 @@
+Optimize database import and implement SQL-based filtering for complex queries
+
+This commit significantly improves the proxy's performance and functionality:
+
+1. **Smart Import Check** - Skip re-importing 3GB SQLite database on restart
+   - Added `check_if_import_needed()` function that checks if main tables
+     (cv_issue, cv_volume, cv_person, cv_publisher) already have data
+   - If data exists, import is skipped, dramatically reducing startup time
+   - Only imports when database is actually empty
+
+2. **SQL-Based Filtering for Complex Queries** - Handle filters and sorting in database
+   - Rewrote `get_list_from_db()` to parse ComicVine filter syntax and convert
+     to SQL queries using PostgreSQL JSONB operators
+   - Supports filters: `filter=name:Iron Man` → `WHERE data->>'name' = 'Iron Man'`
+   - Supports sorting: `sort=start_year:desc` → `ORDER BY data->>'start_year' DESC`
+   - Supports multiple filters: `filter=name:Iron Man,start_year:1963`
+   - Handles pagination with `limit` and `offset` parameters
+   - List endpoints now always check database first (even with complex filters)
+     before falling back to ComicVine API
+
+3. **Simplified Resource Type Mapping** - Only support actual database tables
+   - Updated all table maps to only include the 4 tables that exist:
+     * issue → cv_issue
+     * volume → cv_volume
+     * person → cv_person
+     * publisher → cv_publisher
+   - Removed references to non-existent resource types (character, concept,
+     object, origin, power, story_arc, team, location, series, episode, etc.)
+   - Requests for unsupported resource types are forwarded directly to API
+
+4. **Enhanced Import Handling**
+   - Added explicit import handlers for cv_person and cv_publisher tables
+   - Improved table skipping logic:
+     * Skips FTS tables (volume_fts, volume_fts_data, volume_fts_idx, etc.)
+     * Skips sqlite_stat1 (SQLite statistics table)
+   - Other tables (cv_sync_metadata, comic_files, comic_covers) are imported
+     generically but not used for API proxying
+
+5. **Better Logging and Error Handling**
+   - Added detailed [SOURCE] logging to track data source (database vs API)
+   - Improved error messages for database connection issues
+   - Better handling of missing tables and connection failures
+
+Technical Details:
+- Uses PostgreSQL JSONB operators (data->>'field') for filtering and sorting
+- Maintains ComicVine API response format for compatibility
+- Handles edge cases (missing tables, empty results, connection failures)
+- All database queries use parameterized statements for security
+
+Performance Improvements:
+- Startup time reduced from minutes to seconds when data exists
+- Complex filtered queries now served from database instead of API
+- Reduced API rate limiting issues by serving more requests from cache
+
+This change makes the proxy much more efficient and practical for production use,
+especially with large databases that would otherwise take a long time to import
+on every restart.

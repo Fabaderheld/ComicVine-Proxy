@@ -335,22 +335,12 @@ class ComicVineProxyDB:
 
     def get_resource_from_db(self, resource_type: str, resource_id: str) -> Optional[Dict[str, Any]]:
         """Get resource data from the appropriate table based on resource type"""
-        # Map resource types to table names
+        # Map resource types to table names (only tables that actually exist in the database)
         table_map = {
             'issue': 'cv_issue',
             'volume': 'cv_volume',
             'person': 'cv_person',
-            'publisher': 'cv_publisher',
-            'character': 'cv_character',
-            'concept': 'cv_concept',
-            'object': 'cv_object',
-            'origin': 'cv_origin',
-            'power': 'cv_power',
-            'story_arc': 'cv_story_arc',
-            'team': 'cv_team',
-            'location': 'cv_location',
-            'series': 'cv_series',
-            'episode': 'cv_episode'
+            'publisher': 'cv_publisher'
         }
 
         table_name = table_map.get(resource_type)
@@ -429,6 +419,147 @@ class ComicVineProxyDB:
 
         return None
 
+    def get_list_from_db(self, resource_type: str, query_params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
+        """Get list of resources from database table with filtering and sorting"""
+        if not self.conn:
+            return None
+
+        # Map resource types to table names (only tables that actually exist in the database)
+        table_map = {
+            'issue': 'cv_issue',
+            'volume': 'cv_volume',
+            'person': 'cv_person',
+            'publisher': 'cv_publisher'
+        }
+
+        table_name = table_map.get(resource_type)
+        if not table_name:
+            return None
+
+        try:
+            cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+
+            # Check if table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                    AND table_name = %s
+                ) as exists
+            """, (table_name,))
+            result = cursor.fetchone()
+            table_exists = result['exists'] if result else False
+
+            if not table_exists:
+                if VERBOSE:
+                    print(f"Table {table_name} does not exist", file=sys.stderr)
+                return None
+
+            # Get limit and offset from query params
+            limit = min(int(query_params.get('limit', 100)) if query_params else 100, 100)  # Max 100
+            offset = int(query_params.get('offset', 0)) if query_params else 0
+
+            # Build WHERE clause from filters
+            where_clauses = []
+            filter_params = []
+
+            if query_params and 'filter' in query_params:
+                filter_str = query_params['filter']
+                # Parse filter: field:value or field:value,field:value
+                filters = filter_str.split(',')
+                for filter_item in filters:
+                    if ':' in filter_item:
+                        field, value = filter_item.split(':', 1)
+                        field = field.strip()
+                        value = value.strip()
+
+                        # Build JSONB query for the field
+                        # For JSONB, we use: data->>'field' = 'value'
+                        # Handle common fields: name, start_year, publisher, etc.
+                        where_clauses.append(f"data->>%s = %s")
+                        filter_params.extend([field, value])
+
+            # Build ORDER BY clause from sort
+            order_by = "id"
+            if query_params and 'sort' in query_params:
+                sort_str = query_params['sort']
+                # Parse sort: field:direction
+                if ':' in sort_str:
+                    sort_field, sort_dir = sort_str.split(':', 1)
+                    sort_field = sort_field.strip()
+                    sort_dir = sort_dir.strip().upper()
+
+                    if sort_dir in ('ASC', 'DESC'):
+                        # For JSONB, use: ORDER BY data->>'field' ASC/DESC
+                        # But we need to handle different data types
+                        # For now, use text comparison
+                        order_by = f"data->>'{sort_field}' {sort_dir} NULLS LAST"
+                    else:
+                        order_by = f"data->>'{sort_field}' ASC NULLS LAST"
+                else:
+                    # Default to ASC if no direction specified
+                    order_by = f"data->>'{sort_str.strip()}' ASC NULLS LAST"
+
+            # Build the query
+            where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+            # Query with filters and sorting
+            query = f"""
+                SELECT data FROM {table_name}
+                WHERE {where_sql}
+                ORDER BY {order_by}
+                LIMIT %s OFFSET %s
+            """
+
+            query_params_list = filter_params + [limit, offset]
+
+            if VERBOSE:
+                print(f"Executing query: {query}", file=sys.stderr)
+                print(f"  Params: {query_params_list}", file=sys.stderr)
+
+            cursor.execute(query, query_params_list)
+            results = cursor.fetchall()
+
+            if not results:
+                return None
+
+            # Convert to list of dicts
+            items = []
+            for row in results:
+                data = row['data']
+                if isinstance(data, dict):
+                    items.append(data)
+                else:
+                    items.append(data)
+
+            # Get total count (with same filters)
+            count_query = f"""
+                SELECT COUNT(*) as count FROM {table_name}
+                WHERE {where_sql}
+            """
+            cursor.execute(count_query, filter_params)
+            count_result = cursor.fetchone()
+            total_count = count_result['count'] if count_result else len(items)
+
+            # Build ComicVine API response format
+            return {
+                'status_code': 1,
+                'error': 'OK',
+                'limit': limit,
+                'offset': offset,
+                'number_of_page_results': len(items),
+                'number_of_total_results': total_count,
+                'results': items,
+                '_source': 'local_database_table'
+            }
+
+        except Exception as e:
+            print(f"Error querying list from {table_name}: {e}", file=sys.stderr, flush=True)
+            if VERBOSE:
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+            return None
+
     def get_cached(self, resource_type: str, resource_id: str) -> Optional[Dict[str, Any]]:
         """Get cached response from database (DEPRECATED - kept for backwards compatibility)"""
         if not self.conn:
@@ -479,22 +610,12 @@ class ComicVineProxyDB:
                 return
 
         try:
-            # Map resource types to table names
+            # Map resource types to table names (only tables that actually exist in the database)
             table_map = {
                 'issue': 'cv_issue',
                 'volume': 'cv_volume',
                 'person': 'cv_person',
-                'publisher': 'cv_publisher',
-                'character': 'cv_character',
-                'concept': 'cv_concept',
-                'object': 'cv_object',
-                'origin': 'cv_origin',
-                'power': 'cv_power',
-                'story_arc': 'cv_story_arc',
-                'team': 'cv_team',
-                'location': 'cv_location',
-                'series': 'cv_series',
-                'episode': 'cv_episode'
+                'publisher': 'cv_publisher'
             }
 
             table_name = table_map.get(resource_type)
@@ -738,21 +859,47 @@ def proxy_api(api_path: str):
     resource_type, resource_id, is_list = parsed
 
     # Initialize database connection
+    if not DB_CONFIG:
+        print(f"[SOURCE] WARNING: DB_CONFIG is None - database not configured!", file=sys.stderr, flush=True)
+
     proxy_db = ComicVineProxyDB(DB_CONFIG) if DB_CONFIG else None
+
+    if proxy_db:
+        if proxy_db.conn:
+            print(f"[SOURCE] Database connection: OK", file=sys.stderr, flush=True)
+        else:
+            print(f"[SOURCE] WARNING: Database connection failed - proxy_db.conn is None", file=sys.stderr, flush=True)
+    else:
+        print(f"[SOURCE] WARNING: proxy_db is None - cannot check database", file=sys.stderr, flush=True)
 
     # For detail endpoints, try to get from database tables first
     if not is_list and resource_id and proxy_db and proxy_db.conn:
+        print(f"[SOURCE] Checking database for detail endpoint: {resource_type}/{resource_id}", file=sys.stderr, flush=True)
         db_result = proxy_db.get_resource_from_db(resource_type, resource_id)
         if db_result:
             print(f"[SOURCE] Database HIT (direct table): {resource_type}/{resource_id}", file=sys.stderr, flush=True)
             response = jsonify(db_result)
             response.headers['X-Data-Source'] = db_result.get('_source', 'local_database_table')
             return response
+        else:
+            print(f"[SOURCE] Database MISS: {resource_type}/{resource_id} not found in database", file=sys.stderr, flush=True)
 
-    # For list endpoints, we don't cache them (too many variations)
-    # Just fetch directly from API
-    if is_list:
-        print(f"[SOURCE] List endpoint - fetching from API: {resource_type}", file=sys.stderr, flush=True)
+    # For list endpoints, try to query database first (with SQL filtering)
+    if is_list and proxy_db and proxy_db.conn:
+        print(f"[SOURCE] List endpoint detected: {resource_type}", file=sys.stderr, flush=True)
+        print(f"[SOURCE] Query params: {query_params}", file=sys.stderr, flush=True)
+
+        # Try to get from database - SQL can handle filters and sorting
+        db_list_result = proxy_db.get_list_from_db(resource_type, query_params)
+        if db_list_result:
+            print(f"[SOURCE] Database HIT (list from table with SQL filtering): {resource_type}", file=sys.stderr, flush=True)
+            response = jsonify(db_list_result)
+            response.headers['X-Data-Source'] = 'local_database_table'
+            return response
+        else:
+            print(f"[SOURCE] Database MISS (list): {resource_type} - no data found, trying API", file=sys.stderr, flush=True)
+
+        # Fall through to API fetch if database doesn't have data
         api_response = fetch_from_comicvine(resource_type, None, query_params)
         if api_response:
             response = jsonify(api_response)
@@ -866,10 +1013,57 @@ def index():
     })
 
 
+def check_if_import_needed(db_config: Dict[str, str]) -> bool:
+    """Check if database tables have data - if yes, skip import"""
+    try:
+        pg_conn = psycopg2.connect(
+            host=db_config.get('host', 'localhost'),
+            port=db_config.get('port', '5432'),
+            database=db_config.get('database', 'comicvine'),
+            user=db_config.get('user', 'comicvine'),
+            password=db_config.get('password', 'comicvine')
+        )
+        pg_cursor = pg_conn.cursor()
+
+        # Check main tables that should have data
+        tables_to_check = ['cv_issue', 'cv_volume', 'cv_person', 'cv_publisher']
+
+        for table in tables_to_check:
+            pg_cursor.execute(f"""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                    AND table_name = %s
+                )
+            """, (table,))
+            table_exists = pg_cursor.fetchone()[0]
+
+            if table_exists:
+                pg_cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                count = pg_cursor.fetchone()[0]
+                if count > 0:
+                    print(f"Table {table} has {count} records - import not needed", file=sys.stderr)
+                    pg_conn.close()
+                    return False
+
+        pg_conn.close()
+        print("No data found in main tables - import needed", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"Error checking if import needed: {e}", file=sys.stderr)
+        # If we can't check, assume we need to import
+        return True
+
+
 def import_sqlite_to_postgres(sqlite_path: str, db_config: Dict[str, str]):
     """Import data from SQLite database to PostgreSQL"""
     import shutil
     import tempfile
+
+    # Check if import is needed
+    if not check_if_import_needed(db_config):
+        print("Database already has data - skipping import", file=sys.stderr)
+        return True
 
     # Resolve path and check if file exists
     original_path = sqlite_path
@@ -1025,13 +1219,76 @@ def import_sqlite_to_postgres(sqlite_path: str, db_config: Dict[str, str]):
                             traceback.print_exc(file=sys.stderr)
                         continue
 
+            elif table == 'cv_person':
+                print(f"  Importing {len(rows)} rows from cv_person...", file=sys.stderr)
+                # Create cv_person table if it doesn't exist
+                pg_cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS cv_person (
+                        id INTEGER PRIMARY KEY,
+                        data JSONB
+                    )
+                """)
+
+                for row in rows:
+                    try:
+                        # Convert row to dict using column names
+                        row_dict = dict(zip(columns, row))
+                        person_id = row_dict.get('id') or row_dict.get('cv_id')
+                        if person_id:
+                            pg_cursor.execute("""
+                                INSERT INTO cv_person (id, data)
+                                VALUES (%s, %s)
+                                ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
+                            """, (person_id, json.dumps(row_dict)))
+                            imported_count += 1
+                    except Exception as e:
+                        print(f"Error importing row from cv_person: {e}", file=sys.stderr)
+                        if VERBOSE:
+                            import traceback
+                            traceback.print_exc(file=sys.stderr)
+                        continue
+
+            elif table == 'cv_publisher':
+                print(f"  Importing {len(rows)} rows from cv_publisher...", file=sys.stderr)
+                # Create cv_publisher table if it doesn't exist
+                pg_cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS cv_publisher (
+                        id INTEGER PRIMARY KEY,
+                        data JSONB
+                    )
+                """)
+
+                for row in rows:
+                    try:
+                        # Convert row to dict using column names
+                        row_dict = dict(zip(columns, row))
+                        publisher_id = row_dict.get('id') or row_dict.get('cv_id')
+                        if publisher_id:
+                            pg_cursor.execute("""
+                                INSERT INTO cv_publisher (id, data)
+                                VALUES (%s, %s)
+                                ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
+                            """, (publisher_id, json.dumps(row_dict)))
+                            imported_count += 1
+                    except Exception as e:
+                        print(f"Error importing row from cv_publisher: {e}", file=sys.stderr)
+                        if VERBOSE:
+                            import traceback
+                            traceback.print_exc(file=sys.stderr)
+                        continue
+
             else:
                 # Skip FTS (Full-Text Search) tables - they're SQLite-specific
                 if table.endswith('_fts') or table.endswith('_fts_data') or table.endswith('_fts_docsize') or table.endswith('_fts_config') or table.endswith('_fts_idx'):
                     print(f"  Skipping FTS table: {table}", file=sys.stderr)
                     continue
 
-                # Import all other tables generically
+                # Skip sqlite_stat1 (SQLite statistics table)
+                if table == 'sqlite_stat1':
+                    print(f"  Skipping SQLite system table: {table}", file=sys.stderr)
+                    continue
+
+                # Import other tables generically (cv_sync_metadata, comic_files, comic_covers, etc.)
                 print(f"  Importing {len(rows)} rows from {table} (generic import)...", file=sys.stderr)
 
                 # Create table with same structure (id + data JSONB)

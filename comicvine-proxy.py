@@ -21,14 +21,14 @@ import re
 import json
 import sqlite3
 import argparse
+import hashlib
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from datetime import datetime
 import requests
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, render_template
 from flask_cors import CORS
 import psycopg2
-from psycopg2.extras import RealDictCursor
 from psycopg2.extras import RealDictCursor
 from psycopg2 import sql
 
@@ -41,6 +41,15 @@ COMICVINE_BASE_URL = 'https://comicvine.gamespot.com'
 DB_CONFIG = None
 DB_CONN = None
 VERBOSE = False
+
+
+def get_base_url() -> str:
+    """Base URL for this server, respecting X-Forwarded-* when behind reverse proxy"""
+    if request.headers.get('X-Forwarded-Proto') and request.headers.get('X-Forwarded-Host'):
+        scheme = request.headers.get('X-Forwarded-Proto', 'http').rstrip('/')
+        host = request.headers.get('X-Forwarded-Host', '').split(',')[0].strip()
+        return f"{scheme}://{host}".rstrip('/')
+    return request.url_root.rstrip('/')
 
 
 class ComicVineProxyDB:
@@ -92,6 +101,17 @@ class ComicVineProxyDB:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_resource_lookup
                 ON api_cache(resource_type, resource_id)
+            """)
+
+            # Create image cache table for storing downloaded images
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS image_cache (
+                    url_hash VARCHAR(64) PRIMARY KEY,
+                    source_url TEXT NOT NULL,
+                    image_data BYTEA NOT NULL,
+                    content_type VARCHAR(100) DEFAULT 'image/jpeg',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
             """)
 
             self.conn.commit()
@@ -187,6 +207,11 @@ class ComicVineProxyDB:
                     # Ensure issue_data is a dict and normalize to ComicVine API format
                     if isinstance(issue_data, dict):
                         issue_data = dict(issue_data)
+                        img = self._normalize_image(issue_data.get('image'))
+                        if not self._has_valid_image_url(img) and issue_data.get('image_url'):
+                            img = self._image_from_url(issue_data['image_url'])
+                        if img is not None:
+                            issue_data['image'] = img
                         # Ensure all required fields exist with defaults matching ComicVine API format
                         if 'issue_number' not in issue_data:
                             issue_data['issue_number'] = ''
@@ -232,6 +257,13 @@ class ComicVineProxyDB:
                     # Ensure results is a dict and normalize to ComicVine API format
                     if isinstance(issue_data, dict):
                         issue_data = dict(issue_data)
+                        img = self._normalize_image(issue_data.get('image'))
+                        if not self._has_valid_image_url(img):
+                            img_url = issue_data.get('image_url') or (result.get('image_url') if isinstance(result, dict) else None)
+                            if img_url:
+                                img = self._image_from_url(img_url)
+                        if img is not None:
+                            issue_data['image'] = img
                         # Ensure all required fields exist with defaults matching ComicVine API format
                         if 'issue_number' not in issue_data:
                             issue_data['issue_number'] = ''
@@ -278,6 +310,11 @@ class ComicVineProxyDB:
                     # Ensure issue_data is a dict and normalize to ComicVine API format
                     if isinstance(issue_data, dict):
                         issue_data = dict(issue_data)
+                        img = self._normalize_image(issue_data.get('image'))
+                        if not self._has_valid_image_url(img) and issue_data.get('image_url'):
+                            img = self._image_from_url(issue_data['image_url'])
+                        if img is not None:
+                            issue_data['image'] = img
                         # Ensure all required fields exist with defaults matching ComicVine API format
                         if 'issue_number' not in issue_data:
                             issue_data['issue_number'] = ''
@@ -349,6 +386,10 @@ class ComicVineProxyDB:
                     volume_data = result['data']
                     # Ensure volume_data is a dict and normalize to ComicVine format
                     if isinstance(volume_data, dict):
+                        volume_data = dict(volume_data)
+                        img = self._normalize_image(volume_data.get('image'))
+                        if img is not None:
+                            volume_data['image'] = img
                         # Ensure all required fields exist with defaults matching ComicVine API format
                         # Based on actual ComicVine API response structure
                         if 'deck' not in volume_data:
@@ -408,10 +449,11 @@ class ComicVineProxyDB:
                             volume_data['start_year'] = None
                         if 'issues' not in volume_data:
                             volume_data['issues'] = []
-                        if 'publisher' not in volume_data:
-                            volume_data['publisher'] = None
+                        _pub = volume_data.get('publisher')
+                        if not _pub or (isinstance(_pub, dict) and not _pub.get('name')):
+                            pub_from_issue = self._get_publisher_for_volume_from_issues(volume_id)
+                            volume_data['publisher'] = pub_from_issue if pub_from_issue else None
                         elif isinstance(volume_data.get('publisher'), dict):
-                            # Ensure publisher has name field
                             if 'name' not in volume_data['publisher']:
                                 volume_data['publisher']['name'] = ''
                             elif volume_data['publisher']['name'] is None:
@@ -453,10 +495,11 @@ class ComicVineProxyDB:
                         volume_data['aliases'] = None
                     if 'start_year' not in volume_data:
                         volume_data['start_year'] = None
-                    if 'publisher' not in volume_data:
-                        volume_data['publisher'] = None
+                    _pub = volume_data.get('publisher')
+                    if not _pub or (isinstance(_pub, dict) and not _pub.get('name')):
+                        pub_from_issue = self._get_publisher_for_volume_from_issues(volume_id)
+                        volume_data['publisher'] = pub_from_issue if pub_from_issue else None
                     elif isinstance(volume_data.get('publisher'), dict):
-                        # Ensure publisher has name field
                         if 'name' not in volume_data['publisher']:
                             volume_data['publisher']['name'] = ''
                         elif volume_data['publisher']['name'] is None:
@@ -500,10 +543,11 @@ class ComicVineProxyDB:
                             volume_data['aliases'] = None
                         if 'start_year' not in volume_data:
                             volume_data['start_year'] = None
-                        if 'publisher' not in volume_data:
-                            volume_data['publisher'] = None
+                        _pub = volume_data.get('publisher')
+                        if not _pub or (isinstance(_pub, dict) and not _pub.get('name')):
+                            pub_from_issue = self._get_publisher_for_volume_from_issues(str(volume_id_int))
+                            volume_data['publisher'] = pub_from_issue if pub_from_issue else None
                         elif isinstance(volume_data.get('publisher'), dict):
-                            # Ensure publisher has name field
                             if 'name' not in volume_data['publisher']:
                                 volume_data['publisher']['name'] = ''
                             elif volume_data['publisher']['name'] is None:
@@ -533,8 +577,11 @@ class ComicVineProxyDB:
         table_map = {
             'issue': 'cv_issue',
             'volume': 'cv_volume',
+            'character': 'cv_character',
             'person': 'cv_person',
-            'publisher': 'cv_publisher'
+            'publisher': 'cv_publisher',
+            'story_arc': 'cv_story_arc',
+            'team': 'cv_team',
         }
 
         table_name = table_map.get(resource_type)
@@ -580,6 +627,9 @@ class ComicVineProxyDB:
                     data = result['data']
                     if isinstance(data, dict):
                         data = dict(data)
+                        img = self._normalize_image(data.get('image'))
+                        if img is not None:
+                            data['image'] = img
                     return {
                         'status_code': 1,
                         'error': 'OK',
@@ -597,6 +647,9 @@ class ComicVineProxyDB:
                     data = result['data']
                     if isinstance(data, dict):
                         data = dict(data)
+                        img = self._normalize_image(data.get('image'))
+                        if img is not None:
+                            data['image'] = img
                     return {
                         'status_code': 1,
                         'error': 'OK',
@@ -611,6 +664,74 @@ class ComicVineProxyDB:
 
         return None
 
+    def search(self, query: str, resource_types: Optional[List[str]] = None, limit: int = 50) -> Dict[str, List[Dict]]:
+        """Search across resource types in name, title, description, aliases, deck. Returns dict of type -> list of matching items."""
+        if not self.conn or not query or len(query.strip()) < 2:
+            return {}
+        types = resource_types or ['issue', 'volume', 'character', 'publisher', 'person']
+        table_map = {
+            'issue': 'cv_issue',
+            'volume': 'cv_volume',
+            'character': 'cv_character',
+            'person': 'cv_person',
+            'publisher': 'cv_publisher'
+        }
+        search_term = f"%{query.strip()}%"
+        # Search in relevant text fields (name, title, description, aliases, deck)
+        search_conditions = [
+            "data->>'name' ILIKE %s",
+            "data->>'title' ILIKE %s",
+            "data->>'description' ILIKE %s",
+            "data->>'aliases' ILIKE %s",
+            "data->>'deck' ILIKE %s",
+            "data->>'issue_number' ILIKE %s",
+            "data->'volume'->>'name' ILIKE %s",
+            "data->'publisher'->>'name' ILIKE %s",
+        ]
+        where_clause = " OR ".join(f"({c})" for c in search_conditions)
+        params = [search_term] * len(search_conditions) + [limit]
+        # Type-specific ordering: volumes by count_of_issues DESC (most issues first), then name
+        order_by_map = {
+            'volume': "ORDER BY COALESCE(NULLIF(data->>'count_of_issues','')::int, 0) DESC, data->>'name' ASC NULLS LAST, id ASC",
+            'issue': "ORDER BY data->>'name' ASC NULLS LAST, COALESCE((data->>'issue_number')::text, '') ASC NULLS LAST, id ASC",
+            'character': "ORDER BY COALESCE(NULLIF(data->>'count_of_issue_appearances','')::int, 0) DESC, data->>'name' ASC NULLS LAST, id ASC",
+            'publisher': "ORDER BY data->>'name' ASC NULLS LAST, id ASC",
+            'person': "ORDER BY COALESCE(NULLIF(data->>'count_of_issue_appearances','')::int, 0) DESC, data->>'name' ASC NULLS LAST, id ASC",
+        }
+        results = {}
+        try:
+            cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+            for res_type in types:
+                table = table_map.get(res_type)
+                if not table:
+                    continue
+                try:
+                    cursor.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables
+                            WHERE table_schema = 'public' AND table_name = %s
+                        )
+                    """, (table,))
+                    if not cursor.fetchone()['exists']:
+                        continue
+                    order_sql = order_by_map.get(res_type, "ORDER BY data->>'name' ASC NULLS LAST, id ASC")
+                    cursor.execute(f"""
+                        SELECT data FROM {table}
+                        WHERE {where_clause}
+                        {order_sql}
+                        LIMIT %s
+                    """, params)
+                    rows = cursor.fetchall()
+                    items = [r['data'] for r in rows if isinstance(r['data'], dict)]
+                    if items:
+                        results[res_type] = items
+                except Exception:
+                    continue
+        except Exception as e:
+            if VERBOSE:
+                print(f"Search error: {e}", file=sys.stderr)
+        return results
+
     def get_list_from_db(self, resource_type: str, query_params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
         """Get list of resources from database table with filtering and sorting"""
         if not self.conn:
@@ -620,6 +741,7 @@ class ComicVineProxyDB:
         table_map = {
             'issue': 'cv_issue',
             'volume': 'cv_volume',
+            'character': 'cv_character',
             'person': 'cv_person',
             'publisher': 'cv_publisher'
         }
@@ -643,8 +765,7 @@ class ComicVineProxyDB:
             table_exists = result['exists'] if result else False
 
             if not table_exists:
-                if VERBOSE:
-                    print(f"Table {table_name} does not exist", file=sys.stderr)
+                print(f"[SOURCE] Table {table_name} does not exist", file=sys.stderr, flush=True)
                 return None
 
             # Get limit and offset from query params
@@ -654,6 +775,35 @@ class ComicVineProxyDB:
             # Build WHERE clause from filters
             where_clauses = []
             filter_params = []
+
+            # Volume: filter to major publishers only when requested (default for browse)
+            # cv_volume typically has no publisher - get it from cv_issue (issues have volume+publisher)
+            MAJOR_PUBLISHERS = [
+                'marvel comics', 'marvel', 'dc comics', 'dc',
+                'idw publishing', 'idw', 'skybound', 'image comics', 'image',
+                'mirage studios', 'mirage', 'dark horse comics', 'dark horse'
+            ]
+            if resource_type == 'volume' and query_params:
+                major_only = query_params.get('major_publishers_only', 'true')
+                if str(major_only).lower() in ('true', '1', 'yes'):
+                    placeholders = ', '.join(['%s'] * len(MAJOR_PUBLISHERS))
+                    # Try volume's own publisher first; if null, use publisher from cv_issue
+                    pub_name_expr = (
+                        "LOWER(TRIM(COALESCE("
+                        "data->'publisher'->>'name', "
+                        "(SELECT p.data->>'name' FROM cv_publisher p "
+                        "WHERE p.id = (NULLIF(TRIM(COALESCE(data->'publisher'->>'id','')),''))::int LIMIT 1), "
+                        "(SELECT LOWER(TRIM(COALESCE("
+                        "  i.data->'publisher'->>'name', "
+                        "  (SELECT p2.data->>'name' FROM cv_publisher p2 "
+                        "   WHERE p2.id = (NULLIF(TRIM(COALESCE(i.data->'publisher'->>'id','')),''))::int LIMIT 1), ''"
+                        "))) FROM cv_issue i WHERE (i.data->'volume'->>'id')::text = cv_volume.id::text "
+                        "OR i.data->>'volume' = cv_volume.id::text LIMIT 1), "
+                        "''"
+                        ")))"
+                    )
+                    where_clauses.append(f"{pub_name_expr} IN ({placeholders})")
+                    filter_params.extend(MAJOR_PUBLISHERS)
 
             if query_params and 'filter' in query_params:
                 filter_str = query_params['filter']
@@ -682,7 +832,11 @@ class ComicVineProxyDB:
                             filter_params.append(value)
 
             # Build ORDER BY clause from sort
-            order_by = "id"
+            # Default: volumes by issue count (desc), others by name
+            default_order = {
+                'volume': "COALESCE(NULLIF(data->>'count_of_issues','')::int, 0) DESC, data->>'name' ASC NULLS LAST, id ASC",
+            }
+            order_by = default_order.get(resource_type, "data->>'name' ASC NULLS LAST, id ASC")
             if query_params and 'sort' in query_params:
                 sort_str = query_params['sort']
                 # Parse sort: field:direction
@@ -690,17 +844,20 @@ class ComicVineProxyDB:
                     sort_field, sort_dir = sort_str.split(':', 1)
                     sort_field = sort_field.strip()
                     sort_dir = sort_dir.strip().upper()
+                    if sort_dir not in ('ASC', 'DESC'):
+                        sort_dir = 'ASC'
 
-                    if sort_dir in ('ASC', 'DESC'):
-                        # For JSONB, use: ORDER BY data->>'field' ASC/DESC
-                        # But we need to handle different data types
-                        # For now, use text comparison
-                        order_by = f"data->>'{sort_field}' {sort_dir} NULLS LAST"
+                    if sort_field in ('count_of_issues', 'count_of_issue'):
+                        # Numeric sort for issue count
+                        order_by = f"COALESCE(NULLIF(data->>'{sort_field}','')::int, 0) {sort_dir} NULLS LAST, data->>'name' ASC NULLS LAST, id ASC"
                     else:
-                        order_by = f"data->>'{sort_field}' ASC NULLS LAST"
+                        order_by = f"data->>'{sort_field}' {sort_dir} NULLS LAST, id ASC"
                 else:
-                    # Default to ASC if no direction specified
-                    order_by = f"data->>'{sort_str.strip()}' ASC NULLS LAST"
+                    sort_field = sort_str.strip()
+                    if sort_field in ('count_of_issues', 'count_of_issue'):
+                        order_by = f"COALESCE(NULLIF(data->>'{sort_field}','')::int, 0) DESC NULLS LAST, data->>'name' ASC NULLS LAST, id ASC"
+                    else:
+                        order_by = f"data->>'{sort_field}' ASC NULLS LAST, id ASC"
 
             # Build the query
             where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
@@ -739,14 +896,30 @@ class ComicVineProxyDB:
 
             print(f"[SOURCE] Found {len(results)} results for {resource_type}", file=sys.stderr, flush=True)
 
-            # Convert to list of dicts
+            # Convert to list of dicts, normalizing image field (may be JSON string in some DBs)
             items = []
             for row in results:
-                data = row['data']
+                data = row.get('data') if hasattr(row, 'get') else (row[0] if row else None)
                 if isinstance(data, dict):
+                    data = dict(data)
+                    img = self._normalize_image(data.get('image'))
+                    if img is not None:
+                        data['image'] = img
                     items.append(data)
                 else:
                     items.append(data)
+
+            # Enrich volumes with publisher from issues when cv_volume has no publisher
+            if resource_type == 'volume':
+                for item in items:
+                    if isinstance(item, dict):
+                        _pub = item.get('publisher')
+                        if not _pub or (isinstance(_pub, dict) and not _pub.get('name')):
+                            vid = str(item.get('id') or item.get('cv_id') or '').split('-')[-1]
+                            if vid:
+                                pub_from_issue = self._get_publisher_for_volume_from_issues(vid)
+                                if pub_from_issue:
+                                    item['publisher'] = pub_from_issue
 
             # Get total count (with same filters)
             count_query = f"""
@@ -817,6 +990,392 @@ class ComicVineProxyDB:
 
         return None
 
+    def _url_to_hash(self, url: str) -> str:
+        """Convert URL to consistent hash for cache key"""
+        return hashlib.sha256(url.encode()).hexdigest()
+
+    def _image_from_url(self, url: str) -> Optional[dict]:
+        """Build ComicVine-style image dict from a single URL string."""
+        norm = self._normalize_image_url(url) if url else None
+        if norm:
+            return {'medium_url': norm, 'small_url': norm, 'original_url': norm}
+        return None
+
+    def _normalize_image(self, img: Any) -> Any:
+        """Normalize image: if stored as JSON string, parse to dict. Normalize protocol-relative URLs."""
+        if img is None:
+            return None
+        if isinstance(img, dict):
+            out = dict(img)
+            for key in ('icon_url', 'medium_url', 'screen_url', 'screen_large_url',
+                        'small_url', 'super_url', 'thumb_url', 'tiny_url', 'original_url'):
+                u = out.get(key)
+                if u and isinstance(u, str):
+                    norm = self._normalize_image_url(u)
+                    if norm:
+                        out[key] = norm
+            return out
+        if isinstance(img, str):
+            s = img.strip()
+            if s.startswith('{') and ('url' in s or 'medium' in s or 'small' in s):
+                try:
+                    return self._normalize_image(json.loads(s))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            norm = self._normalize_image_url(s)
+            if norm:
+                return {'medium_url': norm, 'small_url': norm, 'original_url': norm}
+        return img
+
+    def _normalize_image_url(self, url: str) -> Optional[str]:
+        """Normalize image URL: protocol-relative (//) -> https:, validate http(s)."""
+        if not url or not isinstance(url, str):
+            return None
+        url = url.strip()
+        if url.startswith('//'):
+            url = 'https:' + url
+        if url.startswith('http'):
+            return url
+        return None
+
+    def _extract_image_urls(self, data: Any) -> List[str]:
+        """Recursively extract all image URLs from ComicVine data structure"""
+        urls = []
+        if isinstance(data, dict):
+            if 'image' in data and isinstance(data['image'], dict):
+                for key in ('icon_url', 'medium_url', 'screen_url', 'screen_large_url',
+                           'small_url', 'super_url', 'thumb_url', 'tiny_url', 'original_url'):
+                    url = data['image'].get(key)
+                    norm = self._normalize_image_url(url) if url else None
+                    if norm:
+                        urls.append(norm)
+            if 'image_url' in data and isinstance(data['image_url'], str):
+                norm = self._normalize_image_url(data['image_url'])
+                if norm:
+                    urls.append(norm)
+            for value in data.values():
+                urls.extend(self._extract_image_urls(value))
+        elif isinstance(data, list):
+            for item in data:
+                urls.extend(self._extract_image_urls(item))
+        return list(set(urls))
+
+    def _has_valid_image_url(self, img: Any) -> bool:
+        """Check if image object has at least one valid URL"""
+        if not img or not isinstance(img, dict):
+            return False
+        for key in ('medium_url', 'small_url', 'thumb_url', 'original_url', 'super_url', 'icon_url', 'tiny_url'):
+            if self._normalize_image_url(img.get(key)):
+                return True
+        return False
+
+    def _slugify(self, name: str) -> str:
+        """Convert name to ComicVine-style URL slug."""
+        if not name or not isinstance(name, str):
+            return ''
+        s = name.lower().strip()
+        s = re.sub(r'[^a-z0-9\s-]', '', s)
+        s = re.sub(r'[\s_]+', '-', s)
+        s = re.sub(r'-+', '-', s).strip('-')
+        return s or 'unnamed'
+
+    def _get_publisher_for_volume_from_issues(self, volume_id: str) -> Optional[dict]:
+        """Get publisher from first issue of this volume (when cv_volume has no publisher)."""
+        if not self.conn:
+            return None
+        try:
+            cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT EXISTS (SELECT FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'cv_issue') as exists
+            """)
+            if not (cursor.fetchone() or {}).get('exists'):
+                return None
+            cursor.execute("""
+                SELECT data FROM cv_issue
+                WHERE (data->'volume'->>'id')::text = %s OR data->>'volume' = %s
+                ORDER BY COALESCE(NULLIF(SUBSTRING(data->>'issue_number' FROM '[0-9]+'),'')::int, 999999) ASC
+                LIMIT 1
+            """, (str(volume_id), str(volume_id)))
+            row = cursor.fetchone()
+            if row and row.get('data'):
+                issue = row['data']
+                pub = issue.get('publisher') if isinstance(issue, dict) else None
+                if pub and isinstance(pub, dict) and pub.get('name'):
+                    return pub
+                # Try cv_publisher lookup if issue has publisher id only
+                pub_id = (pub.get('id') if isinstance(pub, dict) else None) or (pub if isinstance(pub, (int, str)) else None)
+                if pub_id:
+                    cursor.execute("SELECT data FROM cv_publisher WHERE id = %s LIMIT 1", (int(pub_id) if pub_id else 0,))
+                    p_row = cursor.fetchone()
+                    if p_row and p_row.get('data'):
+                        return p_row['data']
+        except Exception as e:
+            if VERBOSE:
+                print(f"[DB] Error getting publisher for volume {volume_id}: {e}", file=sys.stderr)
+        return None
+
+    def _get_issue_1_for_volume(self, volume_id: str) -> Optional[dict]:
+        """Get issue #1 of a volume from DB (for using its cover as volume image)."""
+        if not self.conn:
+            return None
+        try:
+            cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT EXISTS (SELECT FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'cv_issue') as exists
+            """)
+            if not (cursor.fetchone() or {}).get('exists'):
+                return None
+            select_cols = "data, image_url" if getattr(self, 'issue_columns', None) and 'image_url' in self.issue_columns else "data"
+            cursor.execute(f"""
+                SELECT {select_cols} FROM cv_issue
+                WHERE (data->'volume'->>'id')::text = %s
+                   OR data->>'volume' = %s
+                ORDER BY COALESCE(
+                    NULLIF(substring(data->>'issue_number' from '[0-9]+'), '')::int,
+                    999999
+                ) ASC NULLS LAST, id ASC
+                LIMIT 1
+            """, (str(volume_id), str(volume_id)))
+            row = cursor.fetchone()
+            if row and row.get('data'):
+                issue_1 = row['data'] if isinstance(row['data'], dict) else None
+                img_url = (issue_1.get('image_url') if issue_1 else None) or row.get('image_url')
+                if issue_1 and not self._has_valid_image_url(issue_1.get('image')) and img_url:
+                    img = self._image_from_url(img_url)
+                    if img:
+                        issue_1 = dict(issue_1)
+                        issue_1['image'] = img
+                return issue_1
+        except Exception as e:
+            if VERBOSE:
+                print(f"[IMAGE] Error getting issue #1 for volume {volume_id}: {e}", file=sys.stderr)
+        return None
+
+    def _fetch_image_from_comicvine_page(self, resource_type: str, resource_id: str, item: dict) -> Optional[dict]:
+        """Fetch image URL from ComicVine public HTML page (no API key needed)."""
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+
+        if resource_type == 'volume':
+            issue_1 = self._get_issue_1_for_volume(resource_id)
+            if issue_1:
+                img = self._normalize_image(issue_1.get('image'))
+                if self._has_valid_image_url(img):
+                    print(f"[IMAGE] Volume {resource_id}: using issue #1 cover from DB", file=sys.stderr, flush=True)
+                    return img
+                issue_id = str(issue_1.get('id') or issue_1.get('cv_id') or '').split('-')[-1]
+                if issue_id and issue_id != 'None':
+                    issue_img = self._fetch_image_from_comicvine_page('issue', issue_id, issue_1)
+                    if issue_img:
+                        print(f"[IMAGE] Volume {resource_id}: using issue #1 cover from scrape", file=sys.stderr, flush=True)
+                        return issue_img
+            else:
+                print(f"[IMAGE] Volume {resource_id}: no issue #1 in DB, trying volume page as fallback", file=sys.stderr, flush=True)
+
+        type_prefixes = {'issue': '4000', 'volume': '4050', 'character': '4005',
+                         'person': '4040', 'publisher': '4010'}
+        prefix = type_prefixes.get(resource_type)
+        if not prefix:
+            print(f"[IMAGE] Scrape: no prefix for {resource_type}", file=sys.stderr, flush=True)
+            return None
+        slug = ''
+        if isinstance(item.get('site_detail_url'), str) and item['site_detail_url']:
+            m = re.search(r'comicvine\.gamespot\.com/([^/]+)/' + re.escape(prefix) + r'-' + re.escape(str(resource_id)), item['site_detail_url'])
+            if m:
+                slug = m.group(1)
+        if not slug:
+            name = item.get('name') or item.get('title') or ''
+            slug = self._slugify(name) or 'unnamed'
+        url = f"{COMICVINE_BASE_URL}/{slug}/{prefix}-{resource_id}/"
+        print(f"[IMAGE] Scraping {resource_type}/{resource_id} from {url}", file=sys.stderr, flush=True)
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            html = resp.text
+            m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+            if not m:
+                m = re.search(r'content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html, re.I)
+            if m:
+                img_url = m.group(1).strip()
+                if self._normalize_image_url(img_url):
+                    print(f"[IMAGE] Scrape OK {resource_type}/{resource_id}: got image URL", file=sys.stderr, flush=True)
+                    return {'medium_url': img_url, 'small_url': img_url, 'original_url': img_url}
+            print(f"[IMAGE] Scrape: no og:image in HTML for {resource_type}/{resource_id}", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[IMAGE] Scrape failed for {resource_type}/{resource_id}: {e}", file=sys.stderr, flush=True)
+        return None
+
+    def ensure_resource_has_images(self, resource_type: str, resource_id: str, data: Any, base_url: str) -> Any:
+        """
+        If resource has empty image URLs, fetch from ComicVine (API or public page), download images, store in DB.
+        Returns data with image URLs (local /images/hash when cached, or ComicVine URL).
+        """
+        if not data or resource_type not in ('issue', 'volume', 'character', 'publisher', 'person'):
+            return self._replace_image_urls_with_local(data, base_url)
+        item = data.get('results') if isinstance(data, dict) else data
+        if not isinstance(item, dict):
+            return self._replace_image_urls_with_local(data, base_url)
+        img = self._normalize_image(item.get('image'))
+        if not self._has_valid_image_url(img) and item.get('image_url'):
+            img = self._image_from_url(item['image_url'])
+        if img is not None:
+            item['image'] = img
+        if self._has_valid_image_url(img):
+            return self._replace_image_urls_with_local(data, base_url)
+        print(f"[IMAGE] Missing image for {resource_type}/{resource_id}, attempting fetch...", file=sys.stderr, flush=True)
+        api_img = None
+        if resource_type == 'volume':
+            api_img = self._fetch_image_from_comicvine_page('volume', resource_id, item)
+        else:
+            if COMICVINE_API_KEY:
+                api_response = fetch_from_comicvine(resource_type, resource_id, {'field_list': 'id,name,image'})
+                if api_response and api_response.get('results'):
+                    api_img = api_response['results'].get('image')
+            if not self._has_valid_image_url(api_img):
+                api_img = self._fetch_image_from_comicvine_page(resource_type, resource_id, item)
+        if not self._has_valid_image_url(api_img):
+            print(f"[IMAGE] No image found for {resource_type}/{resource_id}", file=sys.stderr, flush=True)
+            return self._replace_image_urls_with_local(data, base_url)
+        print(f"[IMAGE] Downloading and storing image for {resource_type}/{resource_id}", file=sys.stderr, flush=True)
+        self._merge_image_and_store(resource_type, resource_id, item, api_img)
+        item['image'] = api_img
+        return self._replace_image_urls_with_local(data, base_url)
+
+    def _merge_image_and_store(self, resource_type: str, resource_id: str, existing_data: dict, image_data: dict):
+        """Merge image into existing record, download images, update DB."""
+        table_map = {'issue': 'cv_issue', 'volume': 'cv_volume', 'character': 'cv_character',
+                     'person': 'cv_person', 'publisher': 'cv_publisher'}
+        table = table_map.get(resource_type)
+        if not table or not self.conn:
+            return
+        try:
+            merged = dict(existing_data)
+            merged['image'] = image_data
+            self._download_and_store_images(merged)
+            cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute(f"SELECT data FROM {table} WHERE id = %s", (int(resource_id),))
+            row = cursor.fetchone()
+            if row:
+                raw = row.get('data')
+                if isinstance(raw, str):
+                    try:
+                        current = json.loads(raw)
+                    except (json.JSONDecodeError, TypeError):
+                        current = dict(existing_data)
+                elif isinstance(raw, dict):
+                    current = dict(raw)
+                else:
+                    current = dict(existing_data)
+                current['image'] = image_data
+                cursor.execute(f"UPDATE {table} SET data = %s WHERE id = %s",
+                              (json.dumps(current), int(resource_id)))
+                self.conn.commit()
+                if VERBOSE:
+                    print(f"Updated {resource_type}/{resource_id} with image data", file=sys.stderr)
+        except Exception as e:
+            if VERBOSE:
+                print(f"Error merging image: {e}", file=sys.stderr)
+            if self.conn:
+                self.conn.rollback()
+
+    def _download_and_store_images(self, data: Dict[str, Any]):
+        """Download images from URLs in data and store in image_cache"""
+        if not self.conn:
+            return
+        urls = self._extract_image_urls(data)
+        if urls:
+            print(f"[IMAGE] Downloading {len(urls)} image(s) to cache", file=sys.stderr, flush=True)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (compatible; ComicVine-Proxy/1.0)',
+            'Referer': 'https://comicvine.gamespot.com/',
+        }
+        for url in urls:
+            try:
+                url_hash = self._url_to_hash(url)
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    "SELECT url_hash FROM image_cache WHERE url_hash = %s",
+                    (url_hash,)
+                )
+                if cursor.fetchone():
+                    continue  # Already cached
+                resp = requests.get(url, headers=headers, timeout=15)
+                resp.raise_for_status()
+                content_type = resp.headers.get('Content-Type', 'image/jpeg')
+                if ';' in content_type:
+                    content_type = content_type.split(';')[0].strip()
+                cursor.execute("""
+                    INSERT INTO image_cache (url_hash, source_url, image_data, content_type)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (url_hash) DO NOTHING
+                """, (url_hash, url, psycopg2.Binary(resp.content), content_type))
+                self.conn.commit()
+                print(f"[IMAGE] Stored image {url_hash[:12]}... ({len(resp.content)} bytes)", file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"[IMAGE] Failed to download {url[:60]}...: {e}", file=sys.stderr, flush=True)
+                if self.conn:
+                    self.conn.rollback()
+
+    def has_image(self, url_hash: str) -> bool:
+        """Check if image exists in cache without fetching full data."""
+        if not self.conn:
+            return False
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM image_cache WHERE url_hash = %s LIMIT 1",
+                (url_hash,)
+            )
+            return cursor.fetchone() is not None
+        except Exception:
+            return False
+
+    def get_image(self, url_hash: str) -> Optional[Tuple[bytes, str]]:
+        """Get image data from cache. Returns (image_bytes, content_type) or None."""
+        if not self.conn:
+            return None
+        try:
+            cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute(
+                "SELECT image_data, content_type FROM image_cache WHERE url_hash = %s",
+                (url_hash,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return (bytes(row['image_data']), row['content_type'] or 'image/jpeg')
+        except Exception as e:
+            if VERBOSE:
+                print(f"Error getting image: {e}", file=sys.stderr)
+        return None
+
+    def _replace_image_urls_with_local(self, data: Any, base_url: str) -> Any:
+        """Replace ComicVine image URLs with local proxy URLs where we have them cached"""
+        if isinstance(data, dict):
+            result = dict(data)
+            if 'image' in result and isinstance(result['image'], dict):
+                new_image = dict(result['image'])
+                for key in ('icon_url', 'medium_url', 'screen_url', 'screen_large_url',
+                           'small_url', 'super_url', 'thumb_url', 'tiny_url', 'original_url'):
+                    url = new_image.get(key)
+                    norm = self._normalize_image_url(url) if url else None
+                    if norm:
+                        url_hash = self._url_to_hash(norm)
+                        if self.has_image(url_hash):
+                            new_image[key] = base_url.rstrip('/') + '/images/' + url_hash
+                result['image'] = new_image
+            for k, v in result.items():
+                if k != 'image':
+                    result[k] = self._replace_image_urls_with_local(v, base_url)
+            return result
+        elif isinstance(data, list):
+            return [self._replace_image_urls_with_local(item, base_url) for item in data]
+        return data
+
     def cache_response(self, resource_type: str, resource_id: str, response_data: Dict[str, Any]):
         """Store API response in the correct table based on resource type"""
         if not self.conn:
@@ -830,6 +1389,7 @@ class ComicVineProxyDB:
             table_map = {
                 'issue': 'cv_issue',
                 'volume': 'cv_volume',
+                'character': 'cv_character',
                 'person': 'cv_person',
                 'publisher': 'cv_publisher'
             }
@@ -871,6 +1431,10 @@ class ComicVineProxyDB:
 
             self.conn.commit()
             print(f"[SOURCE] Cached {resource_type}/{resource_id} in {table_name} table", file=sys.stderr, flush=True)
+
+            # Download and store images from the cached data
+            if isinstance(actual_data, dict):
+                self._download_and_store_images(actual_data)
 
         except Exception as e:
             print(f"Error caching response in {table_name}: {e}", file=sys.stderr, flush=True)
@@ -1095,12 +1659,11 @@ def proxy_api(api_path: str):
         db_result = proxy_db.get_resource_from_db(resource_type, resource_id)
         if db_result:
             print(f"[SOURCE] Database HIT (direct table): {resource_type}/{resource_id}", file=sys.stderr, flush=True)
-            # Remove _source from response to match ComicVine format exactly
             db_result.pop('_source', None)
+            base_url = get_base_url()
+            db_result = proxy_db.ensure_resource_has_images(resource_type, resource_id, db_result, base_url)
 
-            # Check if volume has empty image URLs - if so, try to get from ComicVine API
-            print(f"[SOURCE] Checking image fallback for {resource_type}/{resource_id} - has 'results': {'results' in db_result}", file=sys.stderr, flush=True)
-            if resource_type == 'volume' and 'results' in db_result:
+            if False and resource_type == 'volume' and 'results' in db_result:
                 print(f"[SOURCE] Volume image fallback check STARTED for {resource_id}", file=sys.stderr, flush=True)
                 volume_results = db_result['results']
                 image_data = volume_results.get('image', {})
@@ -1187,6 +1750,15 @@ def proxy_api(api_path: str):
         db_list_result = proxy_db.get_list_from_db(resource_type, query_params)
         if db_list_result:
             print(f"[SOURCE] Database HIT (list from table with SQL filtering): {resource_type}", file=sys.stderr, flush=True)
+            base_url = get_base_url()
+            items = db_list_result.get('results') or []
+            for i, item in enumerate(items[:24]):
+                if isinstance(item, dict) and item.get('id'):
+                    rid = str(item['id'])
+                    db_list_result['results'][i] = proxy_db.ensure_resource_has_images(
+                        resource_type, rid, {'results': item}, base_url
+                    ).get('results', item)
+            db_list_result = proxy_db._replace_image_urls_with_local(db_list_result, base_url)
             response = jsonify(db_list_result)
             response.headers['X-Data-Source'] = 'local_database_table'
             return response
@@ -1275,6 +1847,40 @@ def forward_request(path: str, query_params: Dict[str, Any] = None):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/images/<url_hash>', methods=['GET'])
+def serve_image(url_hash: str):
+    """Serve cached image from database"""
+    if not DB_CONFIG:
+        return jsonify({'error': 'Database not configured'}), 503
+    proxy_db = ComicVineProxyDB(DB_CONFIG)
+    result = proxy_db.get_image(url_hash)
+    if result:
+        image_data, content_type = result
+        return Response(image_data, mimetype=content_type)
+    return jsonify({'error': 'Image not found'}), 404
+
+
+@app.route('/proxy-image', methods=['GET'])
+def proxy_image():
+    """Proxy external images (e.g. ComicVine) to avoid CORS and hotlinking issues"""
+    url = request.args.get('url')
+    if not url or not url.startswith(('http://', 'https://')):
+        return jsonify({'error': 'Invalid URL'}), 400
+    try:
+        resp = requests.get(url, headers={
+            'User-Agent': 'Mozilla/5.0 (compatible; ComicVine-Proxy/1.0)',
+            'Accept': 'image/*',
+            'Referer': 'https://comicvine.gamespot.com/',
+        }, timeout=15)
+        resp.raise_for_status()
+        content_type = resp.headers.get('Content-Type', 'image/jpeg')
+        if ';' in content_type:
+            content_type = content_type.split(';')[0].strip()
+        return Response(resp.content, mimetype=content_type)
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': str(e)}), 502
+
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
@@ -1301,10 +1907,181 @@ def index():
         'version': '1.0.0',
         'endpoints': {
             '/api/*': 'Proxy ComicVine API requests',
-            '/health': 'Health check'
+            '/health': 'Health check',
+            '/web': 'Web UI for browsing database'
         },
         'usage': 'Configure your application to use this proxy URL instead of comicvine.gamespot.com'
     })
+
+
+# ============== Web UI Routes ==============
+
+@app.route('/web')
+@app.route('/web/')
+def web_ui():
+    """Serve the Web UI for browsing database content"""
+    return render_template('webui.html')
+
+
+@app.route('/web/api/browse/<resource_type>')
+def web_api_browse(resource_type: str):
+    """Browse resources by type (publishers, volumes, characters, issues, people)"""
+    valid_types = {'publisher', 'volume', 'character', 'issue', 'person',
+                   'publishers', 'volumes', 'characters', 'issues', 'people'}
+    if not DB_CONFIG or resource_type not in valid_types:
+        return jsonify({'error': 'Invalid resource type'}), 400
+    proxy_db = ComicVineProxyDB(DB_CONFIG)
+    if not proxy_db.conn:
+        return jsonify({'error': 'Database not available'}), 503
+    singular = {'publishers': 'publisher', 'volumes': 'volume', 'characters': 'character',
+                'issues': 'issue', 'people': 'person'}.get(resource_type, resource_type.rstrip('s'))
+    default_sort = 'count_of_issues:desc' if singular == 'volume' else 'name:asc'
+    # Explicitly pass major_publishers_only for volumes (default true) so filter is always applied
+    params = {
+        'limit': request.args.get('limit', '24'),
+        'offset': request.args.get('offset', '0'),
+        'sort': request.args.get('sort', default_sort),
+        **{k: v for k, v in request.args.items() if k in ('filter', 'sort', 'major_publishers_only')}
+    }
+    if singular == 'volume' and 'major_publishers_only' not in params:
+        params['major_publishers_only'] = 'true'
+    result = proxy_db.get_list_from_db(singular, params)
+    if not result:
+        return jsonify({'results': [], 'number_of_total_results': 0})
+    base_url = get_base_url()
+    items = result.get('results') or []
+    print(f"[IMAGE] Browse {resource_type}: {len(items)} items to process", file=sys.stderr, flush=True)
+    for i, item in enumerate(items):
+        rid = (item.get('id') or item.get('cv_id')) if isinstance(item, dict) else None
+        if isinstance(item, dict) and rid is not None:
+            rid = str(rid).split('-')[-1]
+            result['results'][i] = proxy_db.ensure_resource_has_images(
+                singular, rid, {'results': item}, base_url
+            ).get('results', item)
+    result = proxy_db._replace_image_urls_with_local(result, base_url)
+    return jsonify(result)
+
+
+@app.route('/web/api/search')
+def web_api_search():
+    """Search across all resource types"""
+    if not DB_CONFIG:
+        return jsonify({'error': 'Database not configured'}), 503
+    q = request.args.get('q', '').strip()
+    if len(q) < 2:
+        return jsonify({'results': {}})
+    proxy_db = ComicVineProxyDB(DB_CONFIG)
+    if not proxy_db.conn:
+        return jsonify({'error': 'Database not available'}), 503
+    types = request.args.get('types', 'issue,volume,character,publisher,person').split(',')
+    results = proxy_db.search(q, [t.strip() for t in types if t.strip()], limit=30)
+    base_url = get_base_url()
+    for res_type in results:
+        out = []
+        for item in results[res_type]:
+            rid = (item.get('id') or item.get('cv_id')) if isinstance(item, dict) else None
+            if isinstance(item, dict) and rid is not None:
+                rid = str(rid).split('-')[-1]
+                ensured = proxy_db.ensure_resource_has_images(
+                    res_type, rid, {'results': item}, base_url
+                )
+                item = ensured.get('results', item)
+            out.append(item)
+        results[res_type] = out
+    return jsonify({'results': results})
+
+
+@app.route('/web/api/debug/volume/<int:vol_id>')
+def web_api_debug_volume(vol_id: int):
+    """Debug: return a volume's publisher data (from volume + from first issue)"""
+    if not DB_CONFIG:
+        return jsonify({'error': 'No DB'}), 503
+    proxy_db = ComicVineProxyDB(DB_CONFIG)
+    if not proxy_db.conn:
+        return jsonify({'error': 'No connection'}), 503
+    try:
+        cursor = proxy_db.conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT id, data FROM cv_volume WHERE id = %s LIMIT 1", (vol_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'error': f'Volume {vol_id} not found'})
+        d = row['data']
+        pub = d.get('publisher') if isinstance(d, dict) else None
+        pub_name = (pub.get('name') if isinstance(pub, dict) else None) or (pub if isinstance(pub, str) else None)
+        # Get publisher from first issue of this volume
+        cursor.execute("""
+            SELECT data FROM cv_issue
+            WHERE (data->'volume'->>'id')::text = %s OR data->>'volume' = %s
+            ORDER BY COALESCE(NULLIF(SUBSTRING(data->>'issue_number' FROM '[0-9]+'),'')::int, 999999) ASC
+            LIMIT 1
+        """, (str(vol_id), str(vol_id)))
+        issue_row = cursor.fetchone()
+        issue_pub = None
+        issue_pub_name = None
+        if issue_row and issue_row.get('data'):
+            i = issue_row['data']
+            issue_pub = i.get('publisher') if isinstance(i, dict) else None
+            issue_pub_name = (issue_pub.get('name') if isinstance(issue_pub, dict) else None) or (issue_pub if isinstance(issue_pub, str) else None)
+        return jsonify({
+            'id': vol_id,
+            'name': d.get('name') if isinstance(d, dict) else None,
+            'volume_publisher_raw': pub,
+            'volume_publisher_name': pub_name,
+            'from_issue_publisher_raw': issue_pub,
+            'from_issue_publisher_name': issue_pub_name,
+            'effective_for_filter': (pub_name or issue_pub_name or '').lower().strip(),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/web/api/debug/sample')
+def web_api_debug_sample():
+    """Debug: return first volume with full structure to diagnose image flow"""
+    if not DB_CONFIG:
+        return jsonify({'error': 'No DB'}), 503
+    proxy_db = ComicVineProxyDB(DB_CONFIG)
+    if not proxy_db.conn:
+        return jsonify({'error': 'No connection'}), 503
+    try:
+        cursor = proxy_db.conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT id, data FROM cv_volume LIMIT 1")
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'error': 'No volumes'})
+        item = row['data']
+        rid = str(row['id'])
+        base_url = get_base_url()
+        ensured = proxy_db.ensure_resource_has_images('volume', rid, {'results': item}, base_url)
+        after = ensured.get('results', {}) if isinstance(ensured.get('results'), dict) else {}
+        return jsonify({
+            'raw_image': item.get('image') if isinstance(item, dict) else None,
+            'raw_image_type': type(item.get('image')).__name__ if isinstance(item, dict) else None,
+            'after_ensure': after.get('image'),
+            'base_url': base_url,
+            'comicvine_api_key_set': bool(COMICVINE_API_KEY),
+            'item_keys': list(item.keys()) if isinstance(item, dict) else None,
+            'item_name': item.get('name') if isinstance(item, dict) else None,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/web/api/<resource_type>/<resource_id>')
+def web_api_detail(resource_type: str, resource_id: str):
+    """Get detail for a single resource"""
+    valid_types = {'publisher', 'volume', 'character', 'issue', 'person', 'story_arc', 'team'}
+    if not DB_CONFIG or resource_type not in valid_types:
+        return jsonify({'error': 'Invalid resource type'}), 400
+    proxy_db = ComicVineProxyDB(DB_CONFIG)
+    if not proxy_db.conn:
+        return jsonify({'error': 'Database not available'}), 503
+    result = proxy_db.get_resource_from_db(resource_type, resource_id)
+    if not result:
+        return jsonify({'error': 'Not found'}), 404
+    base_url = get_base_url()
+    result = proxy_db.ensure_resource_has_images(resource_type, resource_id, result, base_url)
+    return jsonify(result)
 
 
 def check_if_import_needed(db_config: Dict[str, str]) -> bool:
@@ -1320,7 +2097,7 @@ def check_if_import_needed(db_config: Dict[str, str]) -> bool:
         pg_cursor = pg_conn.cursor()
 
         # Check main tables that should have data
-        tables_to_check = ['cv_issue', 'cv_volume', 'cv_person', 'cv_publisher']
+        tables_to_check = ['cv_issue', 'cv_volume', 'cv_character', 'cv_person', 'cv_publisher']
 
         for table in tables_to_check:
             pg_cursor.execute(f"""
@@ -1566,6 +2343,32 @@ def import_sqlite_to_postgres(sqlite_path: str, db_config: Dict[str, str]):
                             imported_count += 1
                     except Exception as e:
                         print(f"Error importing row from cv_publisher: {e}", file=sys.stderr)
+                        if VERBOSE:
+                            import traceback
+                            traceback.print_exc(file=sys.stderr)
+                        continue
+
+            elif table == 'cv_character':
+                print(f"  Importing {len(rows)} rows from cv_character...", file=sys.stderr)
+                pg_cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS cv_character (
+                        id INTEGER PRIMARY KEY,
+                        data JSONB
+                    )
+                """)
+                for row in rows:
+                    try:
+                        row_dict = dict(zip(columns, row))
+                        char_id = row_dict.get('id') or row_dict.get('cv_id')
+                        if char_id:
+                            pg_cursor.execute("""
+                                INSERT INTO cv_character (id, data)
+                                VALUES (%s, %s)
+                                ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
+                            """, (char_id, json.dumps(row_dict)))
+                            imported_count += 1
+                    except Exception as e:
+                        print(f"Error importing row from cv_character: {e}", file=sys.stderr)
                         if VERBOSE:
                             import traceback
                             traceback.print_exc(file=sys.stderr)

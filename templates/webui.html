@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ComicVine Proxy - Database Browser</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #1a1a2e;
+      --paper: #f5f0e8;
+      --accent: #e63946;
+      --accent-dim: #c1121f;
+      --highlight: #ffd166;
+      --muted: #6c757d;
+      --card-bg: #fffef9;
+      --border: #e8e4dc;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Source Sans 3', sans-serif;
+      background: var(--paper);
+      color: var(--ink);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+    header {
+      background: linear-gradient(135deg, var(--ink) 0%, #16213e 100%);
+      color: white;
+      padding: 1.5rem 2rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    header h1 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 2rem;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+    }
+    header p { opacity: 0.9; font-size: 0.95rem; }
+    .nav-tabs {
+      display: flex;
+      gap: 0.25rem;
+      margin-top: 1rem;
+      flex-wrap: wrap;
+    }
+    .nav-tabs a {
+      display: inline-block;
+      padding: 0.5rem 1rem;
+      background: rgba(255,255,255,0.1);
+      color: white;
+      text-decoration: none;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      transition: background 0.2s;
+    }
+    .nav-tabs a:hover, .nav-tabs a.active {
+      background: var(--accent);
+    }
+    .search-bar {
+      margin: 1.5rem 2rem;
+      display: flex;
+      gap: 0.5rem;
+      max-width: 600px;
+    }
+    .search-bar input {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      border: 2px solid var(--border);
+      border-radius: 8px;
+      font-size: 1rem;
+      font-family: inherit;
+    }
+    .search-bar input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .search-bar button {
+      padding: 0.75rem 1.5rem;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .search-bar button:hover { background: var(--accent-dim); }
+    .volume-filters {
+      flex: 1 1 100%;
+      margin-top: 0.5rem;
+    }
+    .volume-filters .filter-checkbox {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.9rem;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .volume-filters input[type="checkbox"] {
+      width: 1.1rem;
+      height: 1.1rem;
+      accent-color: var(--accent);
+    }
+    main { padding: 0 2rem 2rem; }
+    .section-title {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.5rem;
+      letter-spacing: 0.05em;
+      margin: 1.5rem 0 1rem;
+      color: var(--ink);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+    .card {
+      background: var(--card-bg);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      border: 1px solid var(--border);
+      transition: transform 0.2s, box-shadow 0.2s;
+      text-decoration: none;
+      color: inherit;
+      display: block;
+    }
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 16px rgba(0,0,0,0.1);
+    }
+    .card-img-wrap {
+      aspect-ratio: 2/3;
+      background: var(--border);
+      position: relative;
+      overflow: hidden;
+      min-height: 120px;
+    }
+    .card-img {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .card-body { padding: 0.75rem; }
+    .card-title {
+      font-weight: 700;
+      font-size: 0.95rem;
+      margin-bottom: 0.25rem;
+      line-height: 1.3;
+    }
+    .card-meta {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .detail-view {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    .detail-header {
+      display: flex;
+      gap: 2rem;
+      margin-bottom: 2rem;
+      flex-wrap: wrap;
+    }
+    .detail-poster-wrap {
+      width: 200px;
+      flex-shrink: 0;
+      aspect-ratio: 2/3;
+      background: var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    .detail-poster {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .detail-info h2 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 2rem;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+    }
+    .detail-info .meta { color: var(--muted); margin-bottom: 1rem; }
+    .detail-info .description {
+      margin-top: 1rem;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1.5rem;
+      margin-top: 1.5rem;
+    }
+    .detail-section {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+    }
+    .detail-section h3 {
+      font-size: 0.9rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin-bottom: 0.5rem;
+      font-weight: 600;
+    }
+    .detail-section ul, .detail-section .attr-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .detail-section li {
+      padding: 0.2rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    .detail-section li:last-child { border-bottom: none; }
+    .detail-section a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .detail-section a:hover { text-decoration: underline; }
+    .attr-row {
+      display: flex;
+      padding: 0.35rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    .attr-row:last-child { border-bottom: none; }
+    .attr-label { color: var(--muted); min-width: 140px; }
+    .back-link {
+      display: inline-block;
+      margin-bottom: 1rem;
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .back-link:hover { text-decoration: underline; }
+    .loading, .error, .empty {
+      text-align: center;
+      padding: 2rem;
+      color: var(--muted);
+    }
+    .error { color: var(--accent); }
+    .type-badge {
+      display: inline-block;
+      padding: 0.2rem 0.5rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      border-radius: 4px;
+      margin-right: 0.5rem;
+    }
+    .type-publisher { background: #cce5ff; color: #004085; }
+    .type-volume { background: #d4edda; color: #155724; }
+    .type-character { background: #fff3cd; color: #856404; }
+    .type-issue { background: #f8d7da; color: #721c24; }
+    .type-person { background: #e2d5f1; color: #5a3d7a; }
+    .type-story_arc { background: #d1ecf1; color: #0c5460; }
+    .type-team { background: #f8d7da; color: #721c24; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ComicVine Proxy</h1>
+    <p>Browse your cached ComicVine database</p>
+    <nav class="nav-tabs">
+      <a href="#" data-browse="publishers">Publishers</a>
+      <a href="#" data-browse="volumes">Volumes</a>
+      <a href="#" data-browse="characters">Characters</a>
+      <a href="#" data-browse="issues">Issues</a>
+      <a href="#" data-browse="people">People</a>
+    </nav>
+  </header>
+
+  <div class="search-bar">
+    <input type="text" id="searchInput" placeholder="Search volumes, characters, issues..." minlength="2">
+    <button id="searchBtn">Search</button>
+    <div class="volume-filters" id="volumeFilters" style="display:none;">
+      <label class="filter-checkbox">
+        <input type="checkbox" id="majorPublishersOnly" checked>
+        Major publishers only (Marvel, DC, IDW, Skybound, Image, Mirage, Dark Horse)
+      </label>
+    </div>
+  </div>
+
+  <main id="main">
+    <div class="loading" id="loading">Loading...</div>
+    <div id="content"></div>
+  </main>
+
+  <script>
+    const API_BASE = window.location.origin + '/web/api';
+    const ORIGIN = window.location.origin;
+
+    function getImageUrl(item) {
+      let img = item?.image;
+      if (!img && item?.image_url) {
+        const u = normalizeUrl(item.image_url);
+        if (u) return u;
+      }
+      if (!img) return null;
+      if (typeof img === 'string') {
+        const u = normalizeUrl(img);
+        if (u) return u;
+        if (img.trim().startsWith('{')) {
+          try { img = JSON.parse(img); } catch (_) { return null; }
+        } else return null;
+      }
+      if (typeof img !== 'object') return null;
+      return img.medium_url || img.small_url || img.thumb_url || img.tiny_url || img.original_url || img.super_url || img.icon_url || null;
+    }
+
+    function normalizeUrl(url) {
+      if (!url || typeof url !== 'string') return null;
+      url = url.trim();
+      if (url.startsWith('//')) url = 'https:' + url;
+      return url.startsWith('http') ? url : null;
+    }
+    function resolveImageUrl(url) {
+      url = normalizeUrl(url);
+      if (!url) return null;
+      if (url.startsWith(ORIGIN + '/images/') || url.startsWith('/images/')) return url.startsWith('http') ? url : ORIGIN + url;
+      if (url.includes('comicvine.gamespot.com') || url.includes('static.comicvine.com')) return proxyImageUrl(url);
+      return url;
+    }
+    function proxyImageUrl(url) {
+      url = normalizeUrl(url);
+      if (!url) return null;
+      return ORIGIN + '/proxy-image?url=' + encodeURIComponent(url);
+    }
+
+    function stripHtml(html) {
+      if (!html || typeof html !== 'string') return '';
+      const d = document.createElement('div');
+      d.innerHTML = html;
+      return d.textContent || d.innerText || '';
+    }
+
+    const PLACEHOLDER_SVG = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22300%22 viewBox=%220 0 200 300%22%3E%3Crect fill=%22%23e8e4dc%22 width=%22200%22 height=%22300%22/%3E%3Ctext x=%22100%22 y=%22155%22 fill=%22%23999%22 font-size=%2214%22 text-anchor=%22middle%22%3ENo image%3C/text%3E%3C/svg%3E';
+
+    function renderCard(item, type) {
+      const rawUrl = getImageUrl(item);
+      const displayUrl = rawUrl ? resolveImageUrl(rawUrl) : PLACEHOLDER_SVG;
+      const name = stripHtml(item.name || item.title || `#${item.issue_number || item.id}` || '');
+      let meta = '';
+      if (type === 'issue') {
+        meta = [item.volume?.name, item.cover_date ? String(item.cover_date).slice(0,4) : null, item.issue_number ? '#' + item.issue_number : null].filter(Boolean).join(' · ');
+      } else if (type === 'volume') {
+        const pub = item.publisher?.name ? stripHtml(item.publisher.name) : '';
+        const year = item.start_year != null ? String(item.start_year) : '';
+        const count = item.count_of_issues != null ? item.count_of_issues + ' issues' : '';
+        meta = [pub, year, count].filter(Boolean).join(' · ');
+      } else if (type === 'character' || type === 'person') {
+        meta = item.deck ? stripHtml(item.deck) : '';
+      } else if (type === 'publisher') {
+        meta = '';
+      }
+      const detailUrl = `/web/#/${type}/${item.id}`;
+      const ph = PLACEHOLDER_SVG.replace(/'/g, "\\'");
+      const proxyUrl = rawUrl && !displayUrl.includes(ORIGIN) ? proxyImageUrl(rawUrl) : null;
+      const imgAttrs = proxyUrl ? ` data-fallback="${escapeHtml(proxyUrl)}" onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback=''}else{this.src='${ph}'}"` : ` onerror="this.src='${ph}'"`;
+      return `
+        <a href="${detailUrl}" class="card" data-nav>
+          <div class="card-img-wrap">
+            <img class="card-img" src="${escapeHtml(displayUrl)}" alt=""${imgAttrs}>
+          </div>
+          <div class="card-body">
+            <div class="card-title">${escapeHtml(name)}</div>
+            ${meta ? `<div class="card-meta">${escapeHtml(stripHtml(meta))}</div>` : ''}
+          </div>
+        </a>
+      `;
+    }
+
+    function escapeHtml(s) {
+      if (!s) return '';
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function renderBrowse(type) {
+      document.querySelectorAll('.nav-tabs a').forEach(a => a.classList.remove('active'));
+      document.querySelector(`[data-browse="${type}"]`)?.classList.add('active');
+      const volumeFiltersEl = document.getElementById('volumeFilters');
+      if (volumeFiltersEl) volumeFiltersEl.style.display = type === 'volumes' ? 'block' : 'none';
+      const singular = type.replace(/s$/, '');
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('content').innerHTML = '';
+
+      let url = `${API_BASE}/browse/${type}?limit=48`;
+      if (singular === 'volume') {
+        url += '&sort=count_of_issues:desc';
+        const cb = document.getElementById('majorPublishersOnly');
+        url += (cb && !cb.checked) ? '&major_publishers_only=false' : '';
+      } else {
+        url += '&sort=name:asc';
+      }
+      fetch(url)
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById('loading').style.display = 'none';
+          const items = data.results || [];
+          if (items.length === 0) {
+            document.getElementById('content').innerHTML = '<div class="empty">No items found.</div>';
+            return;
+          }
+          document.getElementById('content').innerHTML = `
+            <h2 class="section-title">${escapeHtml(type.charAt(0).toUpperCase() + type.slice(1))}</h2>
+            <div class="grid">${items.map(i => renderCard(i, singular)).join('')}</div>
+          `;
+        })
+        .catch(err => {
+          document.getElementById('loading').style.display = 'none';
+          document.getElementById('content').innerHTML = `<div class="error">Error: ${escapeHtml(err.message)}</div>`;
+        });
+    }
+
+    function renderSearch(results) {
+      document.getElementById('loading').style.display = 'none';
+      const types = ['issue', 'volume', 'character', 'publisher', 'person'];
+      let html = '';
+      for (const type of types) {
+        const items = results[type] || [];
+        if (items.length === 0) continue;
+        html += `
+          <h2 class="section-title">${escapeHtml(type.charAt(0).toUpperCase() + type + 's')}</h2>
+          <div class="grid">${items.map(i => renderCard(i, type)).join('')}</div>
+        `;
+      }
+      document.getElementById('content').innerHTML = html || '<div class="empty">No results found.</div>';
+    }
+
+    function renderCreditList(items, itemType) {
+      if (!items || !Array.isArray(items)) return '';
+      return items.slice(0, 50).map(i => {
+        const name = i.name || i.role || (typeof i === 'string' ? i : '');
+        const sid = i.id || (typeof i === 'object' ? i.api_detail_url?.match(/\d+$/)?.[0] : null);
+        if (!name) return '';
+        const link = sid && itemType ? `/web/#/${itemType}/${sid}` : null;
+        return link ? `<li><a href="${escapeHtml(link)}" data-nav>${escapeHtml(stripHtml(name))}</a></li>` : `<li>${escapeHtml(stripHtml(name))}</li>`;
+      }).filter(Boolean).join('') || '';
+    }
+
+    function renderDetail(type, id) {
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('content').innerHTML = '';
+
+      fetch(`${API_BASE}/${type}/${id}`)
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById('loading').style.display = 'none';
+          const item = data.results || data;
+          const imgUrl = getImageUrl(item);
+          const img = imgUrl ? resolveImageUrl(imgUrl) : null;
+          const imgFallback = imgUrl && img ? proxyImageUrl(imgUrl) : null;
+          const name = stripHtml(item.name || item.title || `Issue #${item.issue_number || id}` || '');
+          let meta = '';
+          if (type === 'issue') meta = [item.volume?.name, item.cover_date, item.issue_number].filter(Boolean).join(' · ');
+          else if (type === 'volume') meta = [item.start_year, item.publisher?.name, (item.count_of_issues != null ? item.count_of_issues + ' issues' : '')].filter(Boolean).join(' · ');
+          else if (item.deck) meta = stripHtml(item.deck);
+          if (meta) meta = stripHtml(meta);
+          const desc = stripHtml(item.description || '');
+
+          let sections = '';
+          if (type === 'issue') {
+            const attrs = [];
+            if (item.cover_date) attrs.push(['Cover Date', item.cover_date]);
+            if (item.store_date) attrs.push(['Store Date', item.store_date]);
+            if (item.issue_number) attrs.push(['Issue #', item.issue_number]);
+            if (item.volume) attrs.push(['Volume', item.volume.name ? `<a href="/web/#/volume/${item.volume.id}" data-nav>${escapeHtml(stripHtml(item.volume.name))}</a>` : '-']);
+            const charCredits = renderCreditList(item.character_credits, 'character');
+            const personCredits = renderCreditList(item.person_credits, 'person');
+            const storyArcs = renderCreditList(item.story_arc_credits, 'story_arc');
+            const teams = renderCreditList(item.team_credits, 'team');
+            sections = `
+              <div class="detail-section">
+                <h3>Details</h3>
+                <div class="attr-list">${attrs.map(([l,v]) => `<div class="attr-row"><span class="attr-label">${escapeHtml(l)}</span><span>${typeof v === 'string' ? escapeHtml(v) : v}</span></div>`).join('')}</div>
+              </div>
+              ${charCredits ? `<div class="detail-section"><h3>Characters</h3><ul>${charCredits}</ul></div>` : ''}
+              ${personCredits ? `<div class="detail-section"><h3>People</h3><ul>${personCredits}</ul></div>` : ''}
+              ${storyArcs ? `<div class="detail-section"><h3>Story Arcs</h3><ul>${storyArcs}</ul></div>` : ''}
+              ${teams ? `<div class="detail-section"><h3>Teams</h3><ul>${teams}</ul></div>` : ''}
+            `;
+          } else if (type === 'volume') {
+            const attrs = [];
+            if (item.start_year != null) attrs.push(['Start Year', item.start_year]);
+            if (item.count_of_issues != null) attrs.push(['# of Issues', item.count_of_issues]);
+            if (item.publisher) attrs.push(['Publisher', item.publisher.name ? `<a href="/web/#/publisher/${item.publisher.id}" data-nav>${escapeHtml(stripHtml(item.publisher.name))}</a>` : '-']);
+            const charCredits = renderCreditList(item.character_credits, 'character');
+            const personCredits = renderCreditList(item.person_credits, 'person');
+            const descSection = desc ? `<div class="detail-section"><h3>Description</h3><div class="description">${escapeHtml(desc)}</div></div>` : '';
+            sections = `
+              <div class="detail-section">
+                <h3>Details</h3>
+                <div class="attr-list">${attrs.map(([l,v]) => `<div class="attr-row"><span class="attr-label">${escapeHtml(l)}</span><span>${typeof v === 'string' ? escapeHtml(v) : v}</span></div>`).join('')}</div>
+              </div>
+              ${charCredits ? `<div class="detail-section"><h3>Characters</h3><ul>${charCredits}</ul></div>` : ''}
+              ${personCredits ? `<div class="detail-section"><h3>People</h3><ul>${personCredits}</ul></div>` : ''}
+              ${descSection}
+            `;
+          } else if (type === 'character' || type === 'person') {
+            const attrs = [];
+            if (item.aliases) attrs.push(['Aliases', stripHtml(item.aliases).replace(/\n/g, ', ')]);
+            if (type === 'character') {
+              if (item.real_name) attrs.push(['Real Name', item.real_name]);
+              if (item.origin) attrs.push(['Origin', item.origin]);
+              if (item.powers && item.powers.length) attrs.push(['Powers', item.powers.map(p => p.name || p).join(', ')]);
+              if (item.count_of_issue_appearances != null) attrs.push(['Issue Appearances', item.count_of_issue_appearances]);
+            }
+            if (item.site_detail_url) attrs.push(['ComicVine', `<a href="${escapeHtml(item.site_detail_url)}" target="_blank" rel="noopener">View on ComicVine</a>`]);
+            const descSection = desc ? `<div class="detail-section"><h3>Description</h3><div class="description">${escapeHtml(desc)}</div></div>` : '';
+            sections = `
+              <div class="detail-section">
+                <h3>Details</h3>
+                <div class="attr-list">${attrs.map(([l,v]) => `<div class="attr-row"><span class="attr-label">${escapeHtml(l)}</span><span>${typeof v === 'string' ? escapeHtml(v) : v}</span></div>`).join('')}</div>
+              </div>
+              ${descSection}
+            `;
+          } else if (type === 'publisher') {
+            const attrs = [];
+            if (item.count_of_volumes != null) attrs.push(['Volumes', item.count_of_volumes]);
+            if (item.site_detail_url) attrs.push(['ComicVine', `<a href="${escapeHtml(item.site_detail_url)}" target="_blank" rel="noopener">View on ComicVine</a>`]);
+            const descSection = desc ? `<div class="detail-section"><h3>Description</h3><div class="description">${escapeHtml(desc)}</div></div>` : '';
+            sections = `
+              <div class="detail-section">
+                <h3>Details</h3>
+                <div class="attr-list">${attrs.map(([l,v]) => `<div class="attr-row"><span class="attr-label">${escapeHtml(l)}</span><span>${typeof v === 'string' ? escapeHtml(v) : v}</span></div>`).join('')}</div>
+              </div>
+              ${descSection}
+            `;
+          } else {
+            const attrs = [];
+            if (item.site_detail_url) attrs.push(['ComicVine', `<a href="${escapeHtml(item.site_detail_url)}" target="_blank" rel="noopener">View on ComicVine</a>`]);
+            const descSection = desc ? `<div class="detail-section"><h3>Description</h3><div class="description">${escapeHtml(desc)}</div></div>` : '';
+            sections = `
+              <div class="detail-section">
+                <h3>Details</h3>
+                <div class="attr-list">${attrs.map(([l,v]) => `<div class="attr-row"><span class="attr-label">${escapeHtml(l)}</span><span>${typeof v === 'string' ? escapeHtml(v) : v}</span></div>`).join('')}</div>
+              </div>
+              ${descSection}
+            `;
+          }
+
+          document.getElementById('content').innerHTML = `
+            <a href="/web/#publishers" class="back-link" data-nav>← Back to browse</a>
+            <div class="detail-view">
+              <div class="detail-header">
+                ${img ? `<div class="detail-poster-wrap"><img class="detail-poster" src="${escapeHtml(img)}" alt="" ${imgFallback ? `data-fallback="${escapeHtml(imgFallback)}" ` : ''}onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;this.dataset.fallback=''}else{this.src='${PLACEHOLDER_SVG}'}"></div>` : ''}
+                <div class="detail-info">
+                  <span class="type-badge type-${type}">${escapeHtml(type)}</span>
+                  <h2>${escapeHtml(name)}</h2>
+                  ${meta ? `<div class="meta">${escapeHtml(meta)}</div>` : ''}
+                  ${desc && !sections ? `<div class="description">${escapeHtml(desc)}</div>` : ''}
+                </div>
+              </div>
+              ${sections ? `<div class="detail-grid">${sections}</div>` : ''}
+            </div>
+          `;
+        })
+        .catch(err => {
+          document.getElementById('loading').style.display = 'none';
+          document.getElementById('content').innerHTML = `<div class="error">Error: ${escapeHtml(err.message)}</div>`;
+        });
+    }
+
+    function handleRoute() {
+      const hash = window.location.hash.slice(1) || '';
+      const match = hash.match(/^\/([a-z_]+)\/(\d+)$/);
+      if (match) {
+        renderDetail(match[1], match[2]);
+        return;
+      }
+      const browse = hash.split('/')[0] || 'publishers';
+      if (['publishers','volumes','characters','issues','people'].includes(browse)) {
+        renderBrowse(browse);
+      } else {
+        renderBrowse('publishers');
+      }
+    }
+
+    document.querySelectorAll('.nav-tabs a').forEach(a => {
+      a.addEventListener('click', e => {
+        e.preventDefault();
+        const t = a.dataset.browse;
+        if (t) window.location.hash = t;
+        handleRoute();
+      });
+    });
+
+    document.getElementById('searchBtn').addEventListener('click', () => {
+      const q = document.getElementById('searchInput').value.trim();
+      if (q.length < 2) return;
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('content').innerHTML = '';
+      document.querySelectorAll('.nav-tabs a').forEach(a => a.classList.remove('active'));
+
+      fetch(`${API_BASE}/search?q=${encodeURIComponent(q)}`)
+        .then(r => r.json())
+        .then(data => renderSearch(data.results || {}))
+        .catch(err => {
+          document.getElementById('loading').style.display = 'none';
+          document.getElementById('content').innerHTML = `<div class="error">Error: ${escapeHtml(err.message)}</div>`;
+        });
+    });
+
+    document.getElementById('searchInput').addEventListener('keypress', e => {
+      if (e.key === 'Enter') document.getElementById('searchBtn').click();
+    });
+
+    document.getElementById('majorPublishersOnly')?.addEventListener('change', () => {
+      const hash = (window.location.hash || '').slice(1);
+      if (hash === 'volumes' || hash.startsWith('volumes/')) renderBrowse('volumes');
+    });
+
+    document.addEventListener('click', e => {
+      const link = e.target.closest('a[data-nav]');
+      if (link) {
+        const href = link.getAttribute('href');
+        if (href && href.includes('#')) {
+          e.preventDefault();
+          window.location.hash = href.split('#')[1] || '';
+          handleRoute();
+        }
+      }
+    });
+
+    window.addEventListener('hashchange', handleRoute);
+    handleRoute();
+  </script>
+</body>
+</html>

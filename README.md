@@ -9,6 +9,8 @@ A transparent HTTP proxy server that intercepts ComicVine API calls and provides
 - ✅ **Docker Support**: Fully containerized with docker-compose
 - ✅ **SQLite Import**: Automatically import existing SQLite databases on startup
 - ✅ **Automatic Caching**: Stores API responses in the database for future use
+- ✅ **Image Storage**: Downloads and stores images from ComicVine URLs in the database
+- ✅ **Web UI**: Browse and search your cached database at `/web`
 - ✅ **Full API Support**: Handles all ComicVine API endpoints (issues, volumes, characters, etc.)
 - ✅ **Query Parameter Support**: Preserves filters, sorting, pagination, and field lists
 - ✅ **Fallback to Real API**: Automatically fetches from ComicVine if data isn't cached
@@ -197,7 +199,7 @@ Use nginx or similar to forward `comicvine.gamespot.com` requests to your local 
 
 ## Database Schema
 
-The proxy creates an `api_cache` table in PostgreSQL:
+The proxy creates an `api_cache` table and an `image_cache` table in PostgreSQL:
 
 ```sql
 CREATE TABLE api_cache (
@@ -210,7 +212,34 @@ CREATE TABLE api_cache (
 );
 
 CREATE INDEX idx_resource_lookup ON api_cache(resource_type, resource_id);
+
+CREATE TABLE image_cache (
+    url_hash VARCHAR(64) PRIMARY KEY,
+    source_url TEXT NOT NULL,
+    image_data BYTEA NOT NULL,
+    content_type VARCHAR(100) DEFAULT 'image/jpeg',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 ```
+
+## Web UI
+
+A simple Web UI is available at `/web` for browsing and searching your cached database:
+
+- **Browse** by Publishers, Volumes, Characters, Issues, or People
+- **Search** across all resource types
+- **View details** for issues, volumes, characters, publishers, and people
+
+Open `http://localhost:8080/web` in your browser after starting the proxy.
+
+## Image Storage
+
+When the proxy caches API responses (from ComicVine or your database), it automatically:
+- Downloads images from ComicVine URLs
+- Stores them in the `image_cache` database table
+- Serves cached images at `/images/<hash>` for faster loading
+
+API responses are updated to use local proxy URLs when images are available in the cache.
 
 ## Health Check
 
